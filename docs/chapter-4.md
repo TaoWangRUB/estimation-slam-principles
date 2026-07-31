@@ -186,6 +186,43 @@ flowchart TB
 
 **Reported performance:** average trajectory error below 1% on KITTI odometry and mean position error under 5 cm on EuRoC, running in real time on Jetson. Deployed processing 8 Full-HD distorted RGB images at 30 FPS from 4 stereo cameras on a Jetson Orin AGX within the Isaac Perceptor framework. Multi-camera mode gives two documented benefits: trajectory reliability in feature-poor environments, and higher loop-closure detection rates. A demonstrated robustness test covered cameras randomly with opaque film for 20–60 s intervals with at least one stereo pair uncovered, and tracking survived.
 
+### The public API is the §1.1 split, shipping
+
+Two classes, and they are exactly the frontend/backend division of [Chapter 1](chapter-1.md) — which is the strongest evidence that split is not just a pedagogical device:
+
+```cpp
+class Odometry {                     // frontend — Ch.1 domains A–C
+  PoseEstimate Track(const ImageSet& images,
+                     const ImageSet& masks = {},
+                     const ImageSet& depths = {});
+  void RegisterImuMeasurement(uint32_t sensor_index, const ImuMeasurement&);
+  void GetState(State& state) const;
+};
+
+class Slam {                         // backend — Ch.1 domain D
+  void Track(const Odometry::State& state, const Pose* gt_pose = nullptr);
+  Pose GetPose() const;
+  void SaveMap(folder, callback);
+  void LocalizeInMap(folder, timestamp_ns, guess_pose, ...);
+  void GetLoopClosurePoses(std::vector<PoseStamped>&);
+};
+```
+
+`Slam::Track()` takes an `Odometry::State`, so **that struct is the wire** between the two — the concrete instance of §1.2's contract:
+
+| `Odometry::State` field | Corresponds to |
+|---|---|
+| `Pose delta` — change since last keyframe | the *relative* odometry constraint, never a global pose |
+| `bool keyframe` | the keyframe-selector decision, i.e. the domain B → C boundary of §1.3 |
+| `std::optional<Gravity> gravity` | present only in `Inertial`/`Multisensor` with an IMU — the gravity direction that §4.2 says inertial data makes observable |
+| `std::vector<Observation> observations` | `Feature` |
+| `std::vector<Landmark> landmarks` | `Landmark` |
+| `ContextMap context` | opaque, backend-internal |
+
+Two details reward attention. `Slam` exposes its `PoseGraph` as explicit `nodes` and `edges` — the pose-graph optimization of [Chapter 3](chapter-3.md), not hidden behind an opaque handle. And v17.0.0 *"split `Slam::Track()` into a void tracking call and `Slam::GetPose()`"*: the backend no longer makes the caller wait for a pose, which is precisely the domain-D-must-not-block rule of §1.3, learned the same way everyone learns it.
+
+Version 17.0.0 (2026-07-21) enables cuNLS by default and adds the `Multisensor` mode — any mix of RGB and RGB-D cameras with an optional IMU, which requires a `-DUSE_CUNLS=ON` build and currently supports pinhole cameras only.
+
 **Practical guidance from the NVIDIA docs that matters for a real rig:** synchronization significantly affects performance and should ideally be hardware-based with verified relative timestamps across cameras; VGA or higher resolution is recommended; 30 FPS suits typical human-speed motion; and image quality — lenses, exposure, white balance — matters because clipped regions destroy features.
 
 That last cluster is your hardware-integration territory. The XVS master/slave sync on global-shutter sensors and FC-triggered capture is exactly what "ideally through hardware synchronization" means, and being able to say *why* — that a 10 ms inter-camera skew at 1 m/s injects a 1 cm baseline error that the triangulation attributes to depth — is a much stronger statement than "I set up the cameras."

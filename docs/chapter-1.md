@@ -135,6 +135,9 @@ OutputPredictor                                              Chapters 2 and 6
     on_imu(ImuSample)                       -> Odometry @ now      §2.9 / §6.4
 ```
 
+!!! tip "This split is not hypothetical"
+    NVIDIA's cuVSLAM ships exactly this division as its public API: a `cuvslam::Odometry` class (frontend, domains A–C) whose `Track()` returns a pose estimate, and a `cuvslam::Slam` class (backend, domain D) whose `Track()` **takes an `Odometry::State`**. That struct — relative pose delta, keyframe flag, observations, landmarks, optional gravity — is a real instance of the §1.2 contract. See [§4.4](chapter-4.md).
+
 `OutputPredictor` appears twice deliberately. It is the same idea in both halves of this document — integrate raw IMU forward from a stale optimized state to produce a current one — and PX4's version (§6.4) is the mature implementation of what §2.9 sketches.
 
 ## 1.5 Top-level pseudocode
