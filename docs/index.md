@@ -10,5 +10,6 @@ A working reference: equations, pseudocode, architecture. Written for someone wh
 - [Chapter 3 — Visual-Inertial Odometry: ORB-SLAM3 and cuVSLAM](chapter-3.md)
 - [Chapter 4 — GTSAM and Factor Graphs](chapter-4.md)
 - [Chapter 5 — SLAM as a Whole](chapter-5.md)
+- [References](references.md)
 
-**Notation.** $(\cdot)_W$ world/navigation frame (ENU or NED — stated per chapter), $(\cdot)_B$ body/IMU frame, $(\cdot)_C$ camera frame. $\mathbf{R}_{WB} \in SO(3)$ rotates body vectors into world. $\lfloor \mathbf{v} \rfloor_\times$ is the skew-symmetric matrix. $\tilde{(\cdot)}$ denotes a measurement, $\hat{(\cdot)}$ an estimate, $\delta(\cdot)$ an error.
+**Notation.** $(\cdot)_W$ world/navigation frame (ENU or NED — stated per chapter), $(\cdot)_B$ body/IMU frame, $(\cdot)_C$ camera frame. $\mathbf{R}_{WB} \in SO(3)$ rotates body vectors into world. $\lfloor \mathbf{v} \rfloor_\times$ is the skew-symmetric matrix. $\tilde{(\cdot)}$ denotes a measurement, $\hat{(\cdot)}$ an estimate, $\bar{(\cdot)}$ a noise-free quantity or one evaluated at the linearization point, and $\delta(\cdot)$ an error.

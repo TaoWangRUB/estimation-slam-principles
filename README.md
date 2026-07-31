@@ -15,6 +15,11 @@ the implementation-level detail.
 - **Ch. 3 — Visual-Inertial Odometry** — ORB-SLAM3, cuVSLAM, MSCKF
 - **Ch. 4 — GTSAM & Factor Graphs** — formulation, iSAM2, smart factors, a LIO-SAM-shaped graph
 - **Ch. 5 — SLAM as a Whole** — taxonomy, the modern pipeline, data association, maps, evaluation
+- **References** — sources per chapter, plus cross-check notes
+
+Chapter 1 has been verified equation-by-equation against
+[Qiu Xiaochen's 《预积分总结与公式推导》](https://github.com/PetWorm/IMU-Preintegration-Propogation-Doc),
+a 25-page line-by-line derivation of Forster's on-manifold preintegration.
 
 ## Built with
 

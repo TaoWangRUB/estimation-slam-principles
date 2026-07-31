@@ -45,6 +45,7 @@ nav:
   - "Ch. 3 — Visual-Inertial Odometry": chapter-3.md
   - "Ch. 4 — GTSAM & Factor Graphs": chapter-4.md
   - "Ch. 5 — SLAM as a Whole": chapter-5.md
+  - References: references.md
 
 markdown_extensions:
   - pymdownx.arithmatex:

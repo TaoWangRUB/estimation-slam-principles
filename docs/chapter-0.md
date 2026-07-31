@@ -18,7 +18,11 @@ $$\mathrm{Log}(\mathbf{R}) = \frac{\theta(\mathbf{R} - \mathbf{R}^\top)^\vee}{2\
 
 Both need Taylor fallbacks near $\theta \to 0$ (and $\theta \to \pi$ for Log). Every production implementation has this branch; if yours doesn't, it has a latent NaN.
 
-**Adjoint.** $\mathbf{R}\,\mathrm{Exp}(\boldsymbol{\phi})\,\mathbf{R}^\top = \mathrm{Exp}(\mathbf{R}\boldsymbol{\phi})$, i.e. $\mathrm{Ad}_\mathbf{R} = \mathbf{R}$ for $SO(3)$. Used constantly to move perturbations from the right side to the left.
+**Adjoint.** $\mathbf{R}\,\mathrm{Exp}(\boldsymbol{\phi})\,\mathbf{R}^\top = \mathrm{Exp}(\mathbf{R}\boldsymbol{\phi})$, i.e. $\mathrm{Ad}_\mathbf{R} = \mathbf{R}$ for $SO(3)$. Used constantly to move perturbations from the right side to the left. The form you actually reach for when deriving is the commuting version:
+
+$$\mathrm{Exp}(\boldsymbol{\phi})\,\mathbf{R} = \mathbf{R}\,\mathrm{Exp}(\mathbf{R}^\top\boldsymbol{\phi})$$
+
+It says a rotation can be *pushed through* an $\mathrm{Exp}$ at the cost of rotating the tangent vector. Every telescoping-product step in Chapter 1 — the noise propagation of §1.5 and the gyro-bias Jacobian of §1.6 — is that identity applied repeatedly to migrate all the $\mathrm{Exp}$ factors to one side. It follows from the first form together with $(\mathbf{R}\boldsymbol{\phi})^\wedge = \mathbf{R}\,\boldsymbol{\phi}^\wedge\mathbf{R}^\top$.
 
 **Right Jacobian** — the single most important object for on-manifold Jacobians:
 
