@@ -64,15 +64,18 @@ How to read it physically: at **short $\tau$** you are averaging a handful of sa
 
 Discrete-time covariances scale as $\sigma^2/\Delta t$ for white noise and $\sigma^2 \Delta t$ for random walk:
 
-```
-  continuous density          discrete variance @ Δt         as Δt ↓ (faster IMU)
-  ──────────────────          ──────────────────────         ────────────────────
-  white noise   σ_g   ──────►      σ_g²  /  Δt          ──►   variance grows  ▲
-                                                              (each sample averages
-                                                               less noise away)
-
-  random walk   σ_bg  ──────►      σ_bg² ·  Δt          ──►   variance shrinks ▼
-                                                              (less time to drift)
+```mermaid
+flowchart LR
+  WN["<b>white noise</b><br/>σ_g , σ_a<br/><i>continuous density</i>"]
+  RW["<b>random walk</b><br/>σ_bg , σ_ba<br/><i>continuous density</i>"]
+  WND["σ_g² <b>/</b> Δt<br/><i>discrete variance @ Δt</i>"]
+  RWD["σ_bg² <b>·</b> Δt<br/><i>discrete variance @ Δt</i>"]
+  WNR["variance <b>grows</b> ▲<br/>each sample averages<br/>less noise away"]
+  RWR["variance <b>shrinks</b> ▼<br/>less time to drift"]
+  WN --> WND -->|"as Δt ↓ (faster IMU)"| WNR
+  RW --> RWD -->|"as Δt ↓ (faster IMU)"| RWR
+  style WND fill:#31456b,stroke:#8ab4f8,color:#fff
+  style RWD fill:#31456b,stroke:#8ab4f8,color:#fff
 ```
 
 Getting this inversion backwards is a classic bug — and its symptom is a filter that is beautifully tuned at one IMU rate and diverges at another.
@@ -137,15 +140,18 @@ which is exactly the $\tfrac{1}{2}\mathbf{g}\Delta t_{ij}^2$ appearing on the le
 
 **The telescoping is the whole point:**
 
+```mermaid
+flowchart LR
+  W(("world")) --> Ri["R_i"]
+  Ri -->|"Exp(ω Δt)"| Ri1["R_i₊₁"]
+  Ri1 -->|"Exp(ω Δt)"| Ri2["R_i₊₂"]
+  Ri2 -.->|"…"| Rj["R_j"]
+  Ri -->|"<b>ΔR_ij = R_iᵀ R_j</b><br/>only IMU samples + bias<br/><i>does NOT move</i>"| Rj
+  style Ri fill:#6b3145,stroke:#f8a1b4,color:#fff
+  style Rj fill:#6b3145,stroke:#f8a1b4,color:#fff
 ```
-              ┌──────────── ΔR_ij = R_iᵀ R_j ────────────┐
-              │                                          │
-   world ─── R_i ──[Exp]── R_i₊₁ ──[Exp]── R_i₊₂ ── … ── R_j
-              ▲                                          ▲
-              │                                          │
-      states being optimized —        the bracketed product is not:
-      they move every iteration       only IMU samples and the bias
-```
+
+Red nodes are **states being optimized** — they move every iteration. The bracketed product between them does not: it is built from IMU samples and the bias alone.
 
 **Assumptions made, in order of how much they matter:**
 
@@ -171,16 +177,16 @@ The right-hand sides contain **no** $\mathbf{R}_i, \mathbf{v}_i, \mathbf{p}_i$ �
 
 **Read each box as a split, not as an equation.** Everything the optimizer owns sits on the left; everything the IMU knows sits on the right:
 
-```
-     LEFT — states only                    RIGHT — IMU data only
-  (cheap; re-evaluated every            (expensive; computed ONCE per
-   optimizer iteration)                  keyframe, then never again)
-
-  R_iᵀ (v_j − v_i − g·Δt_ij)      =      Σ_k [ ΔR_ik (ã_k − b_a) Δt ]
-                                                ▲
-                                                └── relative rotation,
-                                                    from gyro alone.
-                                          No R_i.  No v_i.  No p_i.
+```mermaid
+flowchart LR
+  L["<b>LEFT — states only</b><br/>R_iᵀ (v_j − v_i − g·Δt_ij)<br/><br/><i>cheap; re-evaluated<br/>every optimizer iteration</i>"]
+  EQ(("="))
+  R["<b>RIGHT — IMU data only</b><br/>Σ_k [ ΔR_ik (ã_k − b_a) Δt ]<br/><br/><i>expensive; computed ONCE per<br/>keyframe, then never again</i>"]
+  N["ΔR_ik is <b>relative</b> rotation,<br/>from gyro alone —<br/>no R_i, no v_i, no p_i"]
+  L --- EQ --- R
+  R -.-> N
+  style L fill:#6b3145,stroke:#f8a1b4,color:#fff
+  style R fill:#31456b,stroke:#8ab4f8,color:#fff
 ```
 
 Before the split, $\mathbf{R}_k = \mathbf{R}_i\Delta\mathbf{R}_{ik}$ sat *inside* the sum, so every term moved whenever the optimizer touched $\mathbf{R}_i$ — which it does every iteration. Pulling $\mathbf{R}_i^\top$ out front separates *where the body was pointing at time $i$* (a variable) from *how it rotated between $i$ and $k$* (pure gyro data). Only the second survives inside the sum.
@@ -356,41 +362,19 @@ Two implementation notes that cost people days:
 
 ## 2.9 Architecture
 
-```
-   IMU 200-1000 Hz
-        │
-        ▼
- ┌──────────────┐   raw (ω̃, ã, t)
- │ IMU ring buf │───────────────────────────────┐
- └──────┬───────┘                               │
-        │                                       │  (for deskewing,
-        ▼                                       │   image-time interp,
- ┌────────────────────────────────────┐         │   high-rate output)
- │  Preintegrator                     │         │
- │  ┌──────────────────────────────┐  │         │
- │  │ mean:  ΔR, Δv, Δp            │  │         │
- │  │ cov:   Σ (9x9 / 15x15)       │  │         │
- │  │ jac:   ∂Δ/∂b_g, ∂Δ/∂b_a      │  │         │
- │  └──────────────────────────────┘  │         │
- └────────────────┬───────────────────┘         │
-                  │ on keyframe trigger         │
-                  ▼                             │
-        ┌───────────────────┐                   │
-        │  ImuFactor(i,j)   │                   │
-        └─────────┬─────────┘                   │
-                  ▼                             │
-   ╔══════════════════════════════════╗         │
-   ║  Factor graph  /  sliding window ║         │
-   ║  x_i ──[IMU]── x_j ──[IMU]── x_k ║         │
-   ║   │            │            │    ║         │
-   ║ [vision/lidar factors]           ║         │
-   ╚══════════════┬═══════════════════╝         │
-                  │ optimized state @ keyframe  │
-                  ▼                             ▼
-            ┌───────────────────────────────────────┐
-            │  IMU forward-propagation to now       │──► high-rate
-            │  (re-integrate from last KF state)    │    odometry out
-            └───────────────────────────────────────┘
+```mermaid
+flowchart TB
+  IMU["IMU<br/>200–1000 Hz"] --> BUF["IMU ring buffer"]
+  BUF -->|"raw (ω̃, ã, t)"| PRE["<b>Preintegrator</b><br/>mean: ΔR, Δv, Δp<br/>cov: Σ (9×9 / 15×15)<br/>jac: ∂Δ/∂b_g, ∂Δ/∂b_a"]
+  BUF -->|"raw stream — deskewing,<br/>image-time interpolation,<br/>high-rate output"| FWD
+
+  PRE -->|"on keyframe trigger"| IF["ImuFactor(i, j)"]
+  IF --> FG["<b>Factor graph / sliding window</b><br/>x_i ──[IMU]── x_j ──[IMU]── x_k<br/>+ vision / lidar factors"]
+  FG -->|"optimized state @ keyframe<br/>(50–100 ms stale)"| FWD["<b>IMU forward-propagation to now</b><br/>re-integrate from last KF state"]
+  FWD -->|"high-rate odometry out"| OUT(("controller"))
+
+  style PRE fill:#31456b,stroke:#8ab4f8,color:#fff
+  style FWD fill:#6b3145,stroke:#f8a1b4,color:#fff
 ```
 
 The right-hand path is essential and often forgotten: the optimizer produces a state at the *last keyframe*, which is 50–100 ms stale. The controller needs a state *now*. You forward-propagate the raw IMU from the optimized keyframe state. This is exactly the same architectural idea as PX4's output predictor in Chapter 6.

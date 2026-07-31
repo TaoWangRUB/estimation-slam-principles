@@ -40,58 +40,40 @@ Cheap, scalable, and the standard target for loop closure. The information loss 
 
 ## 5.3 The canonical modern pipeline
 
-```
-┌───────────────────────────────────────────────────────────────────────┐
-│                              FRONTEND                                 │
-│                                                                       │
-│  ┌──────────┐  ┌────────────┐  ┌───────────┐  ┌────────────────────┐  │
-│  │ IMU      │  │ Camera     │  │ LiDAR     │  │ Wheel / GNSS       │  │
-│  │ preint.  │  │ features   │  │ deskew +  │  │ odometry, fixes    │  │
-│  │ (Ch.2)   │  │ + tracking │  │ registr.  │  │                    │  │
-│  └────┬─────┘  └─────┬──────┘  └─────┬─────┘  └─────────┬──────────┘  │
-│       └──────────────┴───────────────┴──────────────────┘             │
-│                             │                                         │
-│                   ┌─────────▼──────────┐                              │
-│                   │ ODOMETRY  (VIO/LIO)│  high rate, drifts           │
-│                   └─────────┬──────────┘                              │
-│                             │                                         │
-│                   ┌─────────▼──────────┐                              │
-│                   │ KEYFRAME SELECTION │  motion / time / overlap     │
-│                   └─────────┬──────────┘                              │
-└─────────────────────────────┼─────────────────────────────────────────┘
-                              │
-   ┌──────────────────────────┼──────────────────────────┐
-   │                          ▼                          │
-   │      ┌──────────────────────────────────┐           │
-   │      │  PLACE RECOGNITION               │           │
-   │      │  visual: DBoW2 / NetVLAD         │           │
-   │      │  lidar : Scan Context / M2DP     │           │
-   │      └───────────────┬──────────────────┘           │
-   │                      ▼                              │
-   │      ┌──────────────────────────────────┐           │
-   │      │  GEOMETRIC VERIFICATION          │           │
-   │      │  PnP+RANSAC / ICP fitness gate   │───reject──┘
-   │      └───────────────┬──────────────────┘
-   │                      ▼  accept
-┌──┴───────────────────────────────────────────────────────────────────┐
-│                              BACKEND                                 │
-│   ┌──────────────────────────────────────────────────────────────┐   │
-│   │ FACTOR GRAPH  (iSAM2 / Ceres / g2o)                          │   │
-│   │  odom factors │ IMU factors │ loop factors (robust) │ priors │   │
-│   └──────────────────────────┬───────────────────────────────────┘   │
-└──────────────────────────────┼───────────────────────────────────────┘
-                               ▼
-              ┌──────────────────────────────────┐
-              │  MAP MAINTENANCE                 │
-              │  grid │ OctoMap │ TSDF │ ESDF    │
-              │  dynamic removal, submaps,       │
-              │  memory management (STM/WM/LTM)  │
-              └───────────────┬──────────────────┘
-                              ▼
-                 map → odom → base_link   (REP-105)
-                              │
-                              ▼
-                        Nav2 / planner
+```mermaid
+flowchart TB
+  subgraph FE["FRONTEND"]
+    direction TB
+    subgraph SRC[" "]
+      direction LR
+      A["IMU preintegration<br/>Ch.2"]
+      B["camera features<br/>+ tracking"]
+      C["LiDAR deskew<br/>+ registration"]
+      D["wheel odometry<br/>GNSS fixes"]
+    end
+    OD["<b>ODOMETRY</b> (VIO / LIO)<br/>high rate, drifts"]
+    KS["<b>KEYFRAME SELECTION</b><br/>motion · time · overlap"]
+    SRC --> OD --> KS
+  end
+
+  KS --> PRC
+  subgraph LOOPD["LOOP CLOSURE — asynchronous"]
+    direction TB
+    PRC["<b>PLACE RECOGNITION</b><br/>visual: DBoW2 / NetVLAD<br/>lidar: Scan Context / M2DP"]
+    GEO{"<b>GEOMETRIC VERIFICATION</b><br/>PnP+RANSAC / ICP fitness gate"}
+    PRC --> GEO
+    GEO -->|reject| PRC
+  end
+
+  KS --> BEG
+  GEO -->|accept| BEG
+  BEG["<b>BACKEND — FACTOR GRAPH</b><br/>iSAM2 / Ceres / g2o / cuNLS<br/>odom · IMU · loop (robust) · priors"]
+
+  BEG --> MM["<b>MAP MAINTENANCE</b><br/>grid · OctoMap · TSDF · ESDF<br/>dynamic removal · submaps<br/>memory management (STM/WM/LTM)"]
+  MM --> TF["map → odom → base_link<br/>REP-105"] --> NAV["Nav2 / planner"]
+
+  style OD fill:#31456b,stroke:#8ab4f8,color:#fff
+  style BEG fill:#6b3145,stroke:#f8a1b4,color:#fff
 ```
 
 ## 5.4 Data association is the crux

@@ -74,28 +74,24 @@ Different sensors have different latencies: IMU ~1 ms, baro ~10 ms, GPS 100–20
 
 PX4's solution: **run the EKF at a delayed "fusion time horizon"**, later than the longest sensor delay. Each sensor gets a FIFO ring buffer with a configured delay (`EKF2_*_DELAY`), and data is retrieved from the buffer at the correct time. Then a **complementary filter propagates the delayed state forward to current time** using the buffered IMU data. ArduPilot EKF3 uses the same output-predictor pattern.
 
-```
- t-200ms        t-100ms          t-Δfusion              t (now)
-    │              │                  │                    │
- [GPS ring buf]────┼──────────┐       │                    │
- [Baro ring buf]───┼───┐      │       │                    │
- [Mag ring buf]────┼─┐ │      │       │                    │
- [Vision buf]──────┼┐│ │      │       │                    │
- [IMU ring buf]────┼┼┼─┼──────┼───────┼────────────────────┤
-                   ▼▼▼ ▼      ▼       │                    │
-              ┌────────────────────────┐                   │
-              │   EKF @ fusion horizon │                   │
-              │   (predict + fuse)     │                   │
-              └───────────┬────────────┘                   │
-                          │ state @ t-Δfusion              │
-                          ▼                                │
-              ┌────────────────────────────────────────────┤
-              │ Output predictor (complementary filter)    │
-              │ integrate buffered IMU forward             │
-              │ + smoothly wash out state corrections      │
-              └───────────────────┬────────────────────────┘
-                                  ▼
-                        state @ t  ──►  attitude/position controller
+```mermaid
+flowchart LR
+  subgraph BUFS["Ring buffers — one per sensor, each with its own EKF2_*_DELAY"]
+    direction TB
+    G["GPS<br/>100–200 ms old"]
+    V["Vision / VIO<br/>30–100 ms old"]
+    B["Baro<br/>~10 ms old"]
+    M["Mag"]
+    I["IMU<br/>~1 ms old"]
+  end
+
+  BUFS --> H["<b>EKF @ fusion time horizon</b><br/>t − Δfusion<br/>predict + fuse<br/><i>later than the slowest sensor</i>"]
+  H -->|"state @ t − Δfusion"| OP["<b>Output predictor</b><br/>complementary filter:<br/>integrate buffered IMU forward<br/>+ smoothly wash out corrections"]
+  I -.->|"buffered IMU samples"| OP
+  OP -->|"<b>state @ t (now)</b>"| CTRL["attitude / position controller"]
+
+  style H fill:#31456b,stroke:#8ab4f8,color:#fff
+  style OP fill:#6b3145,stroke:#f8a1b4,color:#fff
 ```
 
 The "smoothly wash out corrections" part matters as much as the propagation: when the EKF applies a correction at the fusion horizon, the output predictor must not step the controller's reference. It applies the delta over a time constant instead. This is precisely the same problem as a `map→odom` jump in ROS 2 disturbing a Nav2 controller.
@@ -139,24 +135,20 @@ This is a genuine fault-tolerance architecture: N-modular redundancy with a comp
 
 The failure mode is instructive too: source switching triggers a state reset, and if the reset picks the wrong reference the vehicle jumps. Transition logic between position sources is where the real complexity lives, not in the filter maths.
 
-```
-        ┌── IMU1 ──► EKF3 core 0 ─┐
-        │                          │
-        ├── IMU2 ──► EKF3 core 1 ─┤──► lane selector ──► AHRS ──► controllers
-        │                          │    (error score,
-        └── IMU3 ──► EKF3 core 2 ─┘     EK3_ERR_THRESH)
-                        ▲
-                        │
-        ┌───────────────┴──────────────────┐
-        │ Source set (EK3_SRCn_*)          │
-        │  POSXY / VELXY / POSZ / VELZ/YAW │
-        │  GPS │ Beacon │ ExtNav │ Flow    │
-        └──────────────────────────────────┘
-                        +
-        ┌──────────────────────────────────┐
-        │ EKF-GSF yaw estimator (mag-free) │
-        │ 1-state terrain height estimator │
-        └──────────────────────────────────┘
+```mermaid
+flowchart LR
+  I1["IMU1"] --> C0["EKF3 core 0"]
+  I2["IMU2"] --> C1["EKF3 core 1"]
+  I3["IMU3"] --> C2["EKF3 core 2"]
+  C0 --> SEL{"<b>lane selector</b><br/>error score<br/>EK3_ERR_THRESH"}
+  C1 --> SEL
+  C2 --> SEL
+  SEL --> AHRS["AHRS"] --> CTRL["controllers"]
+
+  SRC["<b>Source set</b> EK3_SRCn_*<br/>POSXY · VELXY · POSZ · VELZ · YAW<br/>GPS │ Beacon │ ExtNav │ Flow │ WheelEnc"] --> SEL
+  EXTRA["<b>EKF-GSF yaw estimator</b> (mag-free)<br/><b>1-state terrain height estimator</b>"] --> SEL
+
+  style SEL fill:#31456b,stroke:#8ab4f8,color:#fff
 ```
 
 ## 6.8 Pseudocode — the real loop
@@ -205,19 +197,29 @@ loop @ IMU rate:
 
 This is the seam between the two halves of this document. Chapters 2–5 build an optimization-based estimator; this chapter is the filter running on the autopilot. On a real vehicle they are chained, not alternatives — the companion computer runs VIO/SLAM, and the flight controller fuses its output as **one aiding source among several**.
 
-```
-  companion computer                        flight controller
-  ┌───────────────────────────┐             ┌──────────────────────────────┐
-  │ Ch.2 preintegration       │             │  EKF2 / EKF3                 │
-  │ Ch.3 factor graph         │  odometry   │                              │
-  │ Ch.4 VIO  ────────────────┼────────────►│  ext_vision  ─┐              │
-  │ Ch.5 loop closure, map    │  pose+cov   │  GPS ─────────┤              │
-  └───────────┬───────────────┘  @ 20-60 Hz │  baro ────────┼─► fusion ──► │
-              │                             │  mag ─────────┘   horizon    │
-              │  same physical IMU          │       ▲                      │
-              └─────────────────────────────┼───────┘ IMU as INPUT here,   │
-                        (read twice)        │         never an observation │
-                                            └──────────────────────────────┘
+```mermaid
+flowchart LR
+  subgraph CC["companion computer"]
+    direction TB
+    P["Ch.2 preintegration"] --> FG["Ch.3 factor graph"] --> VIO["Ch.4 VIO"] --> SL["Ch.5 loop closure, map"]
+  end
+
+  subgraph FC["flight controller"]
+    direction TB
+    EV["ext_vision"] --> FUSE["fusion horizon<br/>EKF2 / EKF3"]
+    GPS["GPS"] --> FUSE
+    BARO["baro"] --> FUSE
+    MAG["mag"] --> FUSE
+    IMUIN["IMU — as prediction INPUT,<br/>never an observation"] --> FUSE
+  end
+
+  SL -->|"Odometry, pose + covariance<br/>20–60 Hz"| EV
+  IMU(("same physical IMU")) --> P
+  IMU -->|"read twice"| IMUIN
+  FUSE --> CTRL["controller"]
+
+  style FUSE fill:#6b3145,stroke:#f8a1b4,color:#fff
+  style IMU fill:#31456b,stroke:#8ab4f8,color:#fff
 ```
 
 The plumbing, concretely:

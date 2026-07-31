@@ -36,7 +36,8 @@ Worth knowing: the document itself carries an erratum notice — it corrects a s
 ## Visual-inertial odometry (Chapter 4)
 
 - **Campos, Elvira, Rodríguez, Montiel, Tardós**, *ORB-SLAM3: An Accurate Open-Source Library for Visual, Visual-Inertial and Multi-Map SLAM*, IEEE T-RO 37(6), 2021.
-- **cuVSLAM** — NVIDIA, *cuVSLAM: CUDA accelerated visual odometry and mapping*, arXiv:2506.04359, and the [Isaac ROS Visual SLAM](https://nvidia-isaac-ros.github.io/repositories_and_packages/isaac_ros_visual_slam/) documentation.
+- **cuVSLAM** — NVIDIA, *cuVSLAM: CUDA accelerated visual odometry and mapping*, arXiv:2506.04359; the source release at [github.com/nvidia-isaac/cuVSLAM](https://github.com/nvidia-isaac/cuVSLAM) (NVIDIA Community License — prebuilt `libcuvslam.so` with open C++/Python bindings, up to 32 cameras, Jetson Orin/Thor); and the [Isaac ROS Visual SLAM](https://nvidia-isaac-ros.github.io/repositories_and_packages/isaac_ros_visual_slam/) documentation.
+- **cuNLS** — [github.com/nvidia-isaac/cuNLS](https://github.com/nvidia-isaac/cuNLS). NVIDIA's CUDA-accelerated nonlinear least-squares solver for bundle adjustment, pose-graph optimization and ICP-style alignment; bundled into cuVSLAM. The GPU counterpart to the solvers of Chapter 3.
 - **Mourikis & Roumeliotis**, *A Multi-State Constraint Kalman Filter for Vision-aided Inertial Navigation*, ICRA 2007. The MSCKF null-space projection of §4.5.
 - **Geneva, Eckenhoff, Lee, Yang, Huang**, *OpenVINS: A Research Platform for Visual-Inertial Estimation*, ICRA 2020. FEJ and observability-constrained consistency fixes.
 - **Qin, Li, Shen**, *VINS-Mono: A Robust and Versatile Monocular Visual-Inertial State Estimator*, IEEE T-RO 34(4), 2018. Midpoint integration in preintegration, and online time-offset calibration.

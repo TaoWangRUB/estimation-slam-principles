@@ -41,59 +41,53 @@ Three terms: visual reprojection (with a robust kernel $\rho$, typically Huber),
 
 Three concurrent threads plus the Atlas.
 
-```
-                        ┌──────────────────────────────────────┐
-   stereo/mono/RGB-D    │              ATLAS                    │
-   + IMU                │  active map │ non-active maps 1..N    │
-        │               │  KFs, MapPoints, covisibility graph,  │
-        │               │  spanning tree, DBoW2 database        │
-        │               └───────▲──────────▲──────────▲─────────┘
-        ▼                       │          │          │
- ┌─────────────────┐            │          │          │
- │   TRACKING      │            │          │          │
- │ ─────────────── │            │          │          │
- │ ORB extraction  │            │          │          │
- │ (8-level pyramid│            │          │          │
- │  FAST + rBRIEF) │            │          │          │
- │       ↓         │            │          │          │
- │ pose prediction │            │          │          │
- │  (motion model  │            │          │          │
- │   or IMU preint)│            │          │          │
- │       ↓         │            │          │          │
- │ track ref-KF /  │────────────┘          │          │
- │ track local map │  queries               │          │
- │       ↓         │                        │          │
- │ relocalization  │                        │          │
- │ if lost         │                        │          │
- │       ↓         │                        │          │
- │ KF decision     │──── new KF ────┐       │          │
- └─────────────────┘                │       │          │
-                                    ▼       │          │
-                        ┌────────────────────┐         │
-                        │  LOCAL MAPPING     │─────────┘
-                        │ ────────────────── │
-                        │ KF insertion       │
-                        │ recent MP culling  │
-                        │ new MP triangulate │
-                        │ LOCAL BA (+IMU)    │
-                        │ KF culling         │
-                        │ IMU init / refine  │
-                        └─────────┬──────────┘
-                                  │
-                                  ▼
-                     ┌──────────────────────────┐
-                     │ LOOP & MAP MERGING       │
-                     │ ──────────────────────── │
-                     │ DBoW2 place recognition  │
-                     │ local-window geometric   │
-                     │   verification (3D)      │
-                     │ Sim(3)/SE(3) alignment   │
-                     │ loop fusion              │
-                     │ essential graph opt.     │
-                     │ ─── spawn ───► FULL BA   │
-                     │ OR map merge if match is │
-                     │    in a non-active map   │
-                     └──────────────────────────┘
+```mermaid
+flowchart TB
+  IN["stereo / mono / RGB-D<br/>+ IMU"] --> TR
+
+  subgraph TRK["TRACKING thread"]
+    direction TB
+    TR["ORB extraction<br/>8-level pyramid · FAST · rBRIEF"]
+    PP["pose prediction<br/>motion model or IMU preintegration (Ch.2)"]
+    T1["track ref-KF → track local map<br/>pose-only BA"]
+    RL{"tracking lost?"}
+    REL["relocalize: DBoW2 + PnP RANSAC<br/>else start new map in Atlas"]
+    KD{"new keyframe?"}
+    TR --> PP --> T1 --> RL
+    RL -->|yes| REL
+    RL -->|no| KD
+  end
+
+  subgraph LMP["LOCAL MAPPING thread"]
+    direction TB
+    LM["KF insertion · recent MapPoint culling<br/>triangulate new points"]
+    BA["<b>LOCAL BA</b> (+ IMU factors)"]
+    KC["KF culling · IMU init / refine"]
+    LM --> BA --> KC
+  end
+
+  subgraph LCM["LOOP and MAP MERGING thread"]
+    direction TB
+    LC["DBoW2 place recognition"]
+    GV["local-window 3D geometric verification"]
+    SIM["Sim(3) / SE(3) alignment"]
+    FU["loop fusion → essential-graph optimization"]
+    FB["spawn FULL BA in a separate thread"]
+    LC --> GV --> SIM --> FU --> FB
+  end
+
+  KD -->|yes| LM
+  KC --> LC
+
+  ATLAS[("<b>ATLAS</b><br/>active map + non-active maps 1..N<br/>KFs · MapPoints · covisibility graph<br/>spanning tree · DBoW2 database")]
+  TRK <--> ATLAS
+  LMP <--> ATLAS
+  LCM <--> ATLAS
+  FU -.->|"match lies in a non-active map"| MM["<b>map merge</b><br/>rather than loop closure"]
+  MM -.-> ATLAS
+
+  style ATLAS fill:#31456b,stroke:#8ab4f8,color:#fff
+  style BA fill:#6b3145,stroke:#f8a1b4,color:#fff
 ```
 
 **The four things that make ORB-SLAM3 what it is:**
@@ -136,46 +130,58 @@ track(frame, imu_measurements):
 
 ## 4.4 cuVSLAM
 
-NVIDIA's GPU stereo-visual-inertial system, the engine under `isaac_ros_visual_slam`, and directly relevant if the target stack is Isaac ROS + Nav2 + nvblox on Jetson.
+NVIDIA's GPU visual-inertial system, the engine under `isaac_ros_visual_slam`, and directly relevant if the target stack is Isaac ROS + Nav2 + nvblox on Jetson.
+
+!!! info "Now publicly released"
+    cuVSLAM is published at **[github.com/nvidia-isaac/cuVSLAM](https://github.com/nvidia-isaac/cuVSLAM)** under the **NVIDIA Community License**. Read the licence before assuming "open source" in the OSI sense — the core is distributed as a prebuilt `libcuvslam.so`, with the C++ and Python bindings, examples and build tooling in the repo. That is a materially different proposition from the GPLv3 of ORB-SLAM3, and it is the kind of distinction that decides what ships in a commercial robot.
+
+**Supported configurations**, per the repository:
+
+| Mode | Configuration |
+|---|---|
+| Monocular | 1 camera — scale-ambiguous |
+| RGB-D | 1 RGB-D camera with aligned depth |
+| Multicamera | ≥2 cameras with an overlapping pair, **up to 32 cameras total** |
+| Inertial | stereo pair + 1 IMU |
+| Multisensor | ≥1 RGB-D or overlapping pair, optional IMU (experimental) |
+
+Platforms are Ubuntu 22.04/24.04 on x86_64 and aarch64, **Jetson Orin** (JetPack 6.x, CUDA 12) and **Jetson Thor** (JetPack 7.x, CUDA 13). APIs are C++ and Python — **PyCuVSLAM** ships prebuilt wheels for Python 3.10+, which makes it far easier to benchmark against ORB-SLAM3 or OpenVINS than it used to be.
+
+The release also exposes **[cuNLS](https://github.com/nvidia-isaac/cuNLS)**, NVIDIA's CUDA-accelerated nonlinear least-squares solver, built from source via `FetchContent` and bundled into `libcuvslam` (`USE_CUNLS=ON` by default). It targets exactly the workloads of [Chapter 3](chapter-3.md) — bundle adjustment, pose-graph optimization, ICP-style alignment — which makes it the first credible GPU alternative to Ceres/g2o/GTSAM for the backend, not just the frontend. If you have been assuming the GPU only helps with feature extraction, that assumption is now out of date.
 
 Architecture, per the cuVSLAM paper: two major blocks, **frontend** and **backend**. The frontend handles real-time low-latency pose estimation and local mapping, prioritizing trajectory smoothness, and maintains a local odometry map of recent keyframe poses, visible 3D landmarks and their observations. It splits into a **2D module** — keypoint selection, feature tracking, keyframe selection — and a **3D module**. Keypoint selection divides the image into patches and takes Shi-Tomasi "Good Features to Track" per patch, enforcing approximately uniform spatial distribution with a total count above a threshold. The **backend** runs asynchronously and handles global map consistency via pose-graph optimization and loop closure, over a global map of camera poses, 2D observations, 3D landmarks, pose deltas and visual features.
 
 Isaac ROS documents that all SLAM-related operations run in a separate thread in parallel with visual odometry, that images are copied to GPU before tracking begins, and that landmarks and the pose graph are stored in a structure that does not grow when the same landmark is revisited.
 
-```
- stereo pair(s)          IMU (optional)
-   (1..4 rigs)                │
-        │                     │
-        ▼                     ▼
- ┌────────────────────────────────────────┐
- │  GPU upload  →  FRONTEND               │   ~low-latency path
- │  ┌──────────────────────────────────┐  │
- │  │ 2D module                        │  │
- │  │  patch-uniform Shi-Tomasi        │  │
- │  │  keypoint selection              │  │
- │  │  feature tracking                │  │
- │  │  keyframe selection              │  │
- │  ├──────────────────────────────────┤  │
- │  │ 3D module                        │  │
- │  │  stereo triangulation            │  │
- │  │  local odometry map              │  │
- │  │  (recent KF poses + landmarks)   │  │
- │  │  local optimization + IMU        │  │
- │  └──────────────────────────────────┘  │
- └─────────────┬──────────────────────────┘
-               │ smooth odometry, high rate ──► odom → base_link, Nav2
-               │
-               ▼ (async, separate thread)
- ┌────────────────────────────────────────┐
- │  BACKEND                               │
- │   global map: poses, 2D observations,  │
- │   3D landmarks, pose deltas, features  │
- │   loop closure detection               │
- │   pose graph optimization              │
- └─────────────┬──────────────────────────┘
-               │ corrected global pose ──► map → odom
-               ▼
-        SaveMap / LoadMap  (localization-only mode)
+```mermaid
+flowchart TB
+  CAMS["stereo pair(s)<br/>1 – 32 cameras"] --> GPU
+  IMUIN["IMU (optional)"] --> F3D
+
+  subgraph FE["FRONTEND — low-latency path"]
+    direction TB
+    GPU["GPU upload"]
+    F2D["<b>2D module</b><br/>patch-uniform Shi-Tomasi selection<br/>feature tracking · keyframe selection"]
+    F3D["<b>3D module</b><br/>stereo triangulation<br/>local odometry map (recent KF poses + landmarks)<br/>local optimization + IMU"]
+    GPU --> F2D --> F3D
+  end
+
+  F3D -->|"smooth odometry, high rate<br/><b>odom → base_link</b>"| NAV["Nav2 / controller"]
+  F3D -->|"keyframes, landmarks"| BE
+
+  subgraph BEG["BACKEND — asynchronous, separate thread"]
+    direction TB
+    BE["global map: poses · 2D observations<br/>3D landmarks · pose deltas · features"]
+    LOOP["loop-closure detection"]
+    PGO["pose-graph optimization<br/><i>solved on GPU by cuNLS</i>"]
+    BE --> LOOP --> PGO
+  end
+
+  PGO -->|"corrected global pose<br/><b>map → odom</b>"| NAV
+  BEG --> SAVE[("SaveMap / LoadMap<br/>localization-only mode")]
+
+  style F3D fill:#31456b,stroke:#8ab4f8,color:#fff
+  style PGO fill:#6b3145,stroke:#f8a1b4,color:#fff
 ```
 
 **Reported performance:** average trajectory error below 1% on KITTI odometry and mean position error under 5 cm on EuRoC, running in real time on Jetson. Deployed processing 8 Full-HD distorted RGB images at 30 FPS from 4 stereo cameras on a Jetson Orin AGX within the Isaac Perceptor framework. Multi-camera mode gives two documented benefits: trajectory reliability in feature-poor environments, and higher loop-closure detection rates. A demonstrated robustness test covered cameras randomly with opaque film for 20–60 s intervals with at least one stereo pair uncovered, and tracking survived.
@@ -209,7 +215,7 @@ The landmark is gone. You get a landmark-free EKF update whose cost is linear in
 | Landmarks in state | Yes (map) | Yes (map) | Yes (window) | No (null-space) |
 | Loop closure | DBoW2 + local-window 3D verification | Yes, pose graph | DBoW2 | Not core |
 | Multi-map | Yes (Atlas) | Map save/load | No | No |
-| Hardware | CPU, multi-thread | **GPU / Jetson** | CPU | CPU |
-| Licence | GPLv3 | NVIDIA (partly open) | GPLv3 | GPLv3 |
+| Hardware | CPU, multi-thread | **GPU / Jetson** (Orin, Thor) | CPU | CPU |
+| Licence | GPLv3 | **NVIDIA Community License** (prebuilt core + open bindings) | GPLv3 | GPLv3 |
 
 The GPLv3 column is not a footnote — it is often the actual decision driver in a commercial robot, and mentioning it signals you've shipped something rather than only benchmarked.

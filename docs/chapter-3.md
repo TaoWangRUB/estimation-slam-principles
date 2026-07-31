@@ -30,6 +30,8 @@ $$\mathbf{X}^{(k+1)} = \mathbf{X}^{(k)} \oplus \delta \quad\text{i.e.}\quad \tex
 
 Levenberg-Marquardt: $(\boldsymbol{\Lambda} + \lambda\,\mathrm{diag}(\boldsymbol{\Lambda}))\,\delta = \mathbf{A}^\top\mathbf{b}$. Dogleg trades region-trust for step-size control and is often more robust on SLAM problems.
 
+Solvers are no longer CPU-only. NVIDIA's **[cuNLS](https://github.com/nvidia-isaac/cuNLS)** is a CUDA nonlinear least-squares library aimed at exactly these problems — bundle adjustment, pose-graph optimization, ICP-style alignment — and ships bundled inside cuVSLAM ([§4.4](chapter-4.md)). Worth knowing about before assuming Ceres/g2o/GTSAM on the CPU is the only option for the backend.
+
 ## 3.3 Sparsity, elimination, and the Bayes tree
 
 $\boldsymbol{\Lambda}$ is sparse because each factor touches few variables. Solving = **variable elimination**, which converts the factor graph into a Bayes net (a chordal graph), and grouping its cliques gives the **Bayes tree**.
@@ -152,26 +154,35 @@ Four failure modes this pseudocode is written to avoid:
 
 ## 3.7 Factor graph, drawn
 
-```
-   [prior]
-      │
-      ▼
-    (x₀)══[IMU]══(x₁)══[IMU]══(x₂)══[IMU]══(x₃)
-     ║ ╲          ║ ╲          ║            ║
-   (v₀) ╲       (v₁) ╲       (v₂)         (v₃)
-     ║    ╲       ║    ╲       ║            ║
-   (b₀)──[bias RW]──(b₁)──[bias RW]──(b₂)──(b₃)
-            ╲        │        ╱  ╲          │
-             ╲    [proj]     ╱    [proj]  [GPS]
-              ╲     │       ╱       │
-               ╲──►(X_j)◄──╱      (X_k)
-                  landmark        landmark
+```mermaid
+flowchart LR
+  classDef var fill:#31456b,stroke:#8ab4f8,color:#fff
+  classDef fac fill:#6b3145,stroke:#f8a1b4,color:#fff
+  classDef lm  fill:#3d5b3d,stroke:#9ad49a,color:#fff
 
-           ╔══════════════════════════════════╗
-           ║ (x₃)══════[loop, robust]══════(x₀)║
-           ╚══════════════════════════════════╝
+  PR["prior"]:::fac --- x0(("x₀")):::var
+  x0 --- F1["IMU"]:::fac --- x1(("x₁")):::var
+  x1 --- F2["IMU"]:::fac --- x2(("x₂")):::var
+  x2 --- F3["IMU"]:::fac --- x3(("x₃")):::var
 
-  ( ) variable node      [ ] factor node      ══ constraint
+  v0(("v₀")):::var --- F1 --- v1(("v₁")):::var
+  v1 --- F2 --- v2(("v₂")):::var
+  v2 --- F3 --- v3(("v₃")):::var
+
+  b0(("b₀")):::var --- F1
+  b0 --- R1["bias RW"]:::fac --- b1(("b₁")):::var
+  b1 --- F2
+  b1 --- R2["bias RW"]:::fac --- b2(("b₂")):::var
+  b2 --- F3
+
+  x1 --- P1["proj"]:::fac --- Xj(("X_j")):::lm
+  x2 --- P2["proj"]:::fac --- Xj
+  x3 --- P3["proj"]:::fac --- Xk(("X_k")):::lm
+  x3 --- G["GPS"]:::fac
+
+  x0 --- L["loop<br/>robust"]:::fac --- x3
 ```
+
+Circles are **variable** nodes, rectangles are **factor** nodes; green circles are landmarks.
 
 Read the structure: poses form a chain (IMU + odometry), landmarks create the fill-in that makes BA expensive, biases form their own random-walk chain, GPS and priors are unary, and the loop closure is the single edge that turns an open chain into a cycle — which is exactly why it both fixes drift and is dangerous when wrong.
