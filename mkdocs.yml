@@ -1,0 +1,75 @@
+site_name: Principles of Inertial Estimation, VIO, Factor Graphs & SLAM
+site_description: >-
+  A working reference on IMU preintegration, EKF/INS, visual-inertial odometry,
+  factor graphs (GTSAM) and SLAM — equations, pseudocode and architecture.
+site_url: https://taowangrub.github.io/estimation-slam-principles/
+repo_url: https://github.com/TaoWangRUB/estimation-slam-principles
+repo_name: TaoWangRUB/estimation-slam-principles
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.top
+    - navigation.footer
+    - toc.follow
+    - content.code.copy
+    - content.action.edit
+    - search.suggest
+    - search.highlight
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+nav:
+  - Home: index.md
+  - "Ch. 0 — Lie Group Primer": chapter-0.md
+  - "Ch. 1 — IMU Preintegration": chapter-1.md
+  - "Ch. 2 — EKF / INS (PX4 & ArduPilot)": chapter-2.md
+  - "Ch. 3 — Visual-Inertial Odometry": chapter-3.md
+  - "Ch. 4 — GTSAM & Factor Graphs": chapter-4.md
+  - "Ch. 5 — SLAM as a Whole": chapter-5.md
+
+markdown_extensions:
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.details
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - footnotes
+  - toc:
+      permalink: true
+      toc_depth: 3
+
+plugins:
+  - search
+
+extra_css:
+  - stylesheets/extra.css
+
+extra_javascript:
+  - javascripts/mathjax.js
+  - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js

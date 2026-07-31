@@ -1,0 +1,27 @@
+/* Wide ASCII / box-drawing diagrams: never wrap, scroll horizontally instead. */
+.md-typeset pre > code {
+  white-space: pre;
+  word-break: normal;
+  overflow-wrap: normal;
+}
+
+/* Slightly tighter code so the wider architecture diagrams fit on screen. */
+.md-typeset pre > code {
+  font-size: 0.72rem;
+  line-height: 1.35;
+  font-variant-ligatures: none;
+}
+
+/* Give long-form reference pages a little more room for equations/tables. */
+@media screen and (min-width: 76.25em) {
+  .md-grid {
+    max-width: 68rem;
+  }
+}
+
+/* Let display equations scroll rather than overflow the page on narrow screens. */
+.md-typeset mjx-container[display="true"] {
+  overflow-x: auto;
+  overflow-y: hidden;
+  max-width: 100%;
+}
