@@ -155,67 +155,96 @@ Isaac ROS documents that all SLAM-related operations run in a separate thread in
 
 ```mermaid
 flowchart TB
-  subgraph IN["Input"]
-    IMGS["ImageSet — 1..32 cameras<br/>camera::Rig (intrinsics + extrinsics)"]
-    IMUM["ImuMeasurement<br/>RegisterImuMeasurement()"]
+  subgraph PF["PER FRAME — MultiVisualOdometryBase::track()"]
+    direction TB
+    PRED["<b>1.</b> do_predict() — pose prediction<br/><i>odometry/pose_prediction</i>"]
+    T2D["<b>2. &quot;2D tracking stage&quot;</b><br/>feature_tracker→trackNextFrame()<br/><i>sof/: image_pyramid → gftt (Shi-Tomasi)<br/>→ klt_tracker · lk_tracker · st_tracker</i>"]
+    KFSEL["keyframe decision → FrameState::Key<br/><i>sof/kf_selector.cpp</i>"]
+    PRED --> T2D --> KFSEL
   end
 
-  subgraph FE["FRONTEND — per frame, GPU"]
+  subgraph SNF["<b>3. &quot;PnP stage&quot;</b> — SolverSfMInertial::solveNextFrame()"]
     direction TB
-    UP["GPU upload"]
-    PYR["image pyramid<br/><i>sof/basic_image_downscaler · convolutor · box_blur</i>"]
-    GFTT["GFTT / Shi-Tomasi keypoints, patch-uniform<br/><i>sof/gftt.cpp</i>"]
-    PRED["feature prediction — IMU-aided in inertial modes<br/><i>pipelines/feature_predictor</i>"]
-    TRACK["sparse optical-flow tracking<br/><i>sof/feature_tracker.h</i>"]
-    RANSAC["outlier rejection: fundamental / homography RANSAC<br/><i>libs/epipolar</i>"]
-    LIFT["lift 2D tracks → 3D · triangulate<br/><i>pipelines/track_lifter · triangulator</i>"]
-    PNP["pose estimation — PnP / visual ICP<br/><i>pnp/multicam_pnp · visual_icp · pipelines/inertial_pnp</i>"]
-    UP --> PYR --> GFTT --> TRACK
-    PRED --> TRACK
-    TRACK --> RANSAC --> LIFT --> PNP
+    GATE["check_imu_drops()"]
+    ASSOC["associate tracks ↔ map landmarks<br/>map_.get_recent_landmarks()<br/>setLocation3D(·, kTriangulated)"]
+    PNPSEL{"IMU state == Ok?"}
+    IPNP["runInertialPnP() — uses gravity + prev_pose<br/><i>pipelines/inertial_pnp</i>"]
+    SPNP["runStereoPnP()<br/><i>pnp/multicam_pnp</i>"]
+    SMU["imu_sm_.update_frame_state()<br/><i>pipelines/tracker_state_machine</i>"]
+    GATE --> ASSOC --> PNPSEL
+    PNPSEL -->|yes| IPNP --> SMU
+    PNPSEL -->|no| SPNP --> SMU
+  end
+
+  subgraph KFP["ON KEYFRAME ONLY"]
+    direction TB
+    TRI["triangulator.triangulate(world_from_rig, obs)<br/><i>pipelines/triangulator</i>"]
+    ADDKF["map_.add_keyframe()<br/><i>map/UnifiedMap</i>"]
+    TRI --> ADDKF
   end
 
   subgraph IMUB["INERTIAL — libs/imu"]
     direction TB
-    PRE["<b>IMUPreintegration</b><br/>dR, dV, dP · Σ 9×9 · 5 bias Jacobians<br/><i>imu_preintegration.cpp</i>"]
-    INIT["initialization: SolveGyroBias → SolveGravityDirection<br/>→ LinearAlignment → RefineGravity<br/><i>inertial_optimization.cpp</i>"]
-    SM["state machine<br/>Uninitialized → Initializing → Ok<br/><i>pipelines/tracker_state_machine</i>"]
-    PRE --> INIT --> SM
+    PRE["<b>IMUPreintegration</b><br/>dR, dV, dP · Σ 9×9 · 5 bias Jacobians"]
+    INIT["gravity / bias init — optimize_inertial()<br/>SolveGyroBias → SolveGravityDirection<br/>→ LinearAlignment → RefineGravity"]
+    PRE --> INIT
   end
 
-  subgraph LOCO["LOCAL OPTIMIZATION — keyframe rate"]
+  subgraph SBAS["ASYNC SBA SERVICE — chosen by sba::Mode"]
     direction TB
-    SBA["Schur-complement bundler<br/><i>sba/schur_complement_bundler_{cpu,gpu}</i>"]
-    ISBA["<b>inertial BA</b> — joint visual + IMU<br/>ImuBAProblem: poses · velocities · biases · gravity · landmarks<br/><i>imu/imu_sba_gpu.h · cuNLS</i>"]
-    REF["robust costs — Huber-style loss<br/><i>refinement/cost_pinhole · loss_functions</i>"]
-    SBA --> ISBA --> REF
+    ISBA["<b>ImuSbaGPUService / ImuSbaCPUService</b><br/>joint visual + inertial BA<br/>ImuBAProblem · Schur complement · cuNLS"]
+    OSBA["GpuSbaService / CpuSbaService — vision only<br/><i>sba/schur_complement_bundler_{cpu,gpu}</i>"]
   end
 
-  subgraph BE["BACKEND — asynchronous thread"]
+  subgraph BE["BACKEND — asynchronous"]
     direction TB
-    KFM["UnifiedMap: keyframes + landmarks<br/><i>map/keyframe · landmark · map</i>"]
     ASLAM["async SLAM<br/><i>slam/async_slam</i>"]
-    LOOPC["loop closure → pose graph (nodes + edges)"]
-    LOCZ["localizer · LocalizeInMap · SaveMap<br/><i>slam/localizer · async_localizer</i>"]
-    KFM --> ASLAM --> LOOPC
+    LCS["loop-closure solver + RANSAC<br/><i>slam/slam/loop_closure_solver</i>"]
+    LOCZ["async localizer · LocalizeInMap · SaveMap"]
+    ASLAM --> LCS
     ASLAM --> LOCZ
   end
 
-  IMGS --> UP
-  IMUM --> PRE
-  SM --> PNP
+  IMGS["ImageSet — 1..32 cameras"] --> PRED
+  IMUM["ImuMeasurement"] --> PRE
+  KFSEL --> GATE
+  PRE -.->|"prior for prediction"| PRED
+  INIT --> PNPSEL
+  SMU -->|"PoseEstimate — Odometry::Track()"| ODO(("odom → base_link<br/>smooth, high rate"))
+  SMU -->|"is_keyframe"| TRI
+  ADDKF --> ISBA
+  ADDKF --> OSBA
   PRE --> ISBA
-  PNP -->|"PoseEstimate — Odometry::Track()"| ODO(("odom → base_link<br/>smooth, high rate"))
-  PNP --> KFD{"keyframe?"}
-  KFD -->|yes| SBA
-  REF -->|"Odometry::State"| KFM
   ISBA -.->|"new bias → first-order patch,<br/>or Reintegrate() past 1e-4"| PRE
-  LOOPC -->|"map → odom"| MAPO(("map → odom<br/>discrete corrections"))
+  ADDKF --> ASLAM
+  LCS -->|"map → odom"| MAPO(("map → odom<br/>discrete corrections"))
 
   style PRE fill:#31456b,stroke:#8ab4f8,color:#fff
   style ISBA fill:#6b3145,stroke:#f8a1b4,color:#fff
-  style PNP fill:#31456b,stroke:#8ab4f8,color:#fff
+  style T2D fill:#31456b,stroke:#8ab4f8,color:#fff
 ```
+
+!!! note "Traced from source, v15.0.0"
+    This is read from `MultiVisualOdometryBase::track()` and `SolverSfMInertial::solveNextFrame()` rather than from the paper. The stage names are the code's own: its failure paths log *"Failed to track on the 2D tracking stage"* and *"Failed to track on the PnP stage"*. Upstream is now v17.0.0, which adds the multisensor mode, enables cuNLS by default and adds an NEC gyro-bias fallback; the skeleton above is unchanged by those.
+
+Three details are worth pulling out, because each contradicts the obvious guess:
+
+- **Triangulation happens *after* PnP, and only on keyframes.** Per frame, 3D points are not created — they are *fetched*: `map_.get_recent_landmarks()` marks tracks `kTriangulated`, and PnP resects against those. Only once a frame is accepted as a keyframe does `triangulator.triangulate()` create new landmarks. Frame-rate work stays resection-only.
+- **RANSAC is not in the per-frame path.** In this tree the RANSAC implementations live under `slam/slam/loop_closure_solver` and `slam/async_localizer` — loop closure and relocalization, where a false match is catastrophic. Per-frame outlier handling is carried by the tracker and the robust costs in the bundler instead.
+- **The gauge is fixed through the information matrix, not a prior factor.** On the first run, `prev_pose.info` is set to a diagonal with $10^6$ on the first six entries, commented *"first pose is fixed, but velocities and biases are free"* — the anchoring of §4.2, done by weighting rather than by adding a factor.
+
+| Module | Role |
+|---|---|
+| `libs/sof` | sparse optical flow: image pyramids, `gftt` (Shi-Tomasi), KLT/LK/ST trackers, `kf_selector` |
+| `libs/odometry` | per-mode odometry — mono, multi, RGB-D, stereo-inertial, multisensor; pose prediction; ground constraint |
+| `libs/pnp` | mono / multicam PnP, visual ICP, multisensor pose estimator |
+| `libs/imu` | preintegration, inertial SBA (CPU + GPU), gravity/bias initialization |
+| `libs/sba` | Schur-complement bundler, CPU and GPU |
+| `libs/refinement` | cost functions (pinhole, rational polynomial) and robust losses |
+| `libs/epipolar` | fundamental matrix, homography, triangulation, resectioning utilities |
+| `libs/map` | `UnifiedMap`: keyframes, landmarks, depth-point and plane maps |
+| `libs/slam` | async SLAM, loop-closure solvers (with RANSAC), localizer |
+| `libs/pipelines` | orchestration — `track_online_{mono,multi,rgbd,inertial}`, state machine, async SBA service |
 
 The per-frame settings struct decomposes along exactly these stages — `TrackPerFrameSettings` has `sof`, `kf`, `pnp` and `icp` sub-structs, one per box in the frontend row.
 
