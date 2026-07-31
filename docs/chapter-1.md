@@ -9,13 +9,13 @@ World frame here is any inertial frame with gravity $\mathbf{g}$ (a vector, e.g.
 
 The IMU measures **specific force** — not acceleration — and angular rate in the body frame:
 
-$$\tilde{\boldsymbol{\omega}}_t = \boldsymbol{\omega}_t + \mathbf{b}^g_t + \boldsymbol{\eta}^g_t$$
+$$\tilde{\boldsymbol{\omega}}_t = \boldsymbol{\omega}_t + \mathbf{b}^g_t + \boldsymbol{\eta}^g_t\tag{1.1}$$
 
-$$\tilde{\mathbf{a}}_t = \mathbf{R}_t^\top(\mathbf{a}_t - \mathbf{g}) + \mathbf{b}^a_t + \boldsymbol{\eta}^a_t$$
+$$\tilde{\mathbf{a}}_t = \mathbf{R}_t^\top(\mathbf{a}_t - \mathbf{g}) + \mathbf{b}^a_t + \boldsymbol{\eta}^a_t\tag{1.2}$$
 
 with biases modelled as Brownian motion (random walk):
 
-$$\dot{\mathbf{b}}^g = \boldsymbol{\eta}^{bg}, \qquad \dot{\mathbf{b}}^a = \boldsymbol{\eta}^{ba}$$
+$$\dot{\mathbf{b}}^g = \boldsymbol{\eta}^{bg}, \qquad \dot{\mathbf{b}}^a = \boldsymbol{\eta}^{ba}\tag{1.3}$$
 
 Four noise parameters, all from **Allan variance**, not from the datasheet:
 
@@ -28,7 +28,7 @@ Four noise parameters, all from **Allan variance**, not from the datasheet:
 
 **Where these numbers come from.** Log a stationary IMU for several hours, compute the Allan deviation over averaging time $\tau$, and read the parameters off the slopes of a log-log plot:
 
-$$\sigma_A^2(\tau) = \underbrace{\frac{N^2}{\tau}}_{\text{white noise}} + \underbrace{\frac{2\ln 2}{\pi}B^2}_{\text{bias instability}} + \underbrace{\frac{K^2\tau}{3}}_{\text{bias random walk}}$$
+$$\sigma_A^2(\tau) = \underbrace{\frac{N^2}{\tau}}_{\text{white noise}} + \underbrace{\frac{2\ln 2}{\pi}B^2}_{\text{bias instability}} + \underbrace{\frac{K^2\tau}{3}}_{\text{bias random walk}}\tag{1.4}$$
 
 ```
  σ_A(τ)
@@ -79,55 +79,55 @@ Four steps: invert the sensor model, write the continuous-time ODEs, discretize,
 
 **Step 1 — invert the sensor model.** The IMU equations of §1.1 are written measurement-side. Solve each for the true quantity:
 
-$$\boldsymbol{\omega}_t = \tilde{\boldsymbol{\omega}}_t - \mathbf{b}^g_t - \boldsymbol{\eta}^g_t$$
+$$\boldsymbol{\omega}_t = \tilde{\boldsymbol{\omega}}_t - \mathbf{b}^g_t - \boldsymbol{\eta}^g_t\tag{1.5}$$
 
-$$\tilde{\mathbf{a}}_t = \mathbf{R}_t^\top(\mathbf{a}_t - \mathbf{g}) + \mathbf{b}^a_t + \boldsymbol{\eta}^a_t \;\;\Longrightarrow\;\; \mathbf{a}_t = \mathbf{g} + \mathbf{R}_t(\tilde{\mathbf{a}}_t - \mathbf{b}^a_t - \boldsymbol{\eta}^a_t)$$
+$$\tilde{\mathbf{a}}_t = \mathbf{R}_t^\top(\mathbf{a}_t - \mathbf{g}) + \mathbf{b}^a_t + \boldsymbol{\eta}^a_t \;\;\Longrightarrow\;\; \mathbf{a}_t = \mathbf{g} + \mathbf{R}_t(\tilde{\mathbf{a}}_t - \mathbf{b}^a_t - \boldsymbol{\eta}^a_t)\tag{1.6}$$
 
 Read the second one physically: the accelerometer hands you a body-frame vector, $\mathbf{R}_t$ rotates it into the world, and adding $\mathbf{g}$ back undoes the $-\mathbf{g}$ the sensor applied. Gravity leaves the rotation and reappears as a standalone world-frame term — which is why $\mathbf{g}$ shows up unrotated in every equation from here on.
 
 **Step 2 — continuous-time rigid-body kinematics.**
 
-$$\dot{\mathbf{R}}_t = \mathbf{R}_t\lfloor\boldsymbol{\omega}_t\rfloor_\times, \qquad \dot{\mathbf{v}}_t = \mathbf{a}_t, \qquad \dot{\mathbf{p}}_t = \mathbf{v}_t$$
+$$\dot{\mathbf{R}}_t = \mathbf{R}_t\lfloor\boldsymbol{\omega}_t\rfloor_\times, \qquad \dot{\mathbf{v}}_t = \mathbf{a}_t, \qquad \dot{\mathbf{p}}_t = \mathbf{v}_t\tag{1.7}$$
 
 The first is where the convention of §0.2 bites. $\boldsymbol{\omega}$ is **body-resolved**, so the increment applies on the **right**:
 
-$$\mathbf{R}_{t+dt} = \mathbf{R}_t\,\mathrm{Exp}(\boldsymbol{\omega}\,dt) \approx \mathbf{R}_t(\mathbf{I} + \lfloor\boldsymbol{\omega}\rfloor_\times dt) \;\Longrightarrow\; \frac{\mathbf{R}_{t+dt}-\mathbf{R}_t}{dt} = \mathbf{R}_t\lfloor\boldsymbol{\omega}\rfloor_\times$$
+$$\mathbf{R}_{t+dt} = \mathbf{R}_t\,\mathrm{Exp}(\boldsymbol{\omega}\,dt) \approx \mathbf{R}_t(\mathbf{I} + \lfloor\boldsymbol{\omega}\rfloor_\times dt) \;\Longrightarrow\; \frac{\mathbf{R}_{t+dt}-\mathbf{R}_t}{dt} = \mathbf{R}_t\lfloor\boldsymbol{\omega}\rfloor_\times\tag{1.8}$$
 
 Had $\boldsymbol{\omega}$ been world-resolved you would get $\lfloor\boldsymbol{\omega}_W\rfloor_\times\mathbf{R}_t$ — left multiplication. The skew form is not a choice: differentiating the orthogonality constraint $\mathbf{R}^\top\mathbf{R}=\mathbf{I}$ gives $\dot{\mathbf{R}}^\top\mathbf{R} + \mathbf{R}^\top\dot{\mathbf{R}} = \mathbf{0}$, so $\mathbf{R}^\top\dot{\mathbf{R}}$ **must** be skew-symmetric, and every 3×3 skew matrix is $\lfloor\mathbf{v}\rfloor_\times$ for exactly one vector. That vector is the angular velocity. This is the same statement as $\mathfrak{so}(3) \cong \mathbb{R}^3$, and it is why a rotation carries 3 DoF rather than 9.
 
 Substituting Step 1:
 
-$$\dot{\mathbf{R}}_t = \mathbf{R}_t\lfloor\tilde{\boldsymbol{\omega}}_t - \mathbf{b}^g_t - \boldsymbol{\eta}^g_t\rfloor_\times, \qquad \dot{\mathbf{v}}_t = \mathbf{g} + \mathbf{R}_t(\tilde{\mathbf{a}}_t - \mathbf{b}^a_t - \boldsymbol{\eta}^a_t), \qquad \dot{\mathbf{p}}_t = \mathbf{v}_t$$
+$$\dot{\mathbf{R}}_t = \mathbf{R}_t\lfloor\tilde{\boldsymbol{\omega}}_t - \mathbf{b}^g_t - \boldsymbol{\eta}^g_t\rfloor_\times, \qquad \dot{\mathbf{v}}_t = \mathbf{g} + \mathbf{R}_t(\tilde{\mathbf{a}}_t - \mathbf{b}^a_t - \boldsymbol{\eta}^a_t), \qquad \dot{\mathbf{p}}_t = \mathbf{v}_t\tag{1.9}$$
 
 **Step 3 — discretize with zero-order hold.** Assume $\tilde{\boldsymbol{\omega}}$ and $\tilde{\mathbf{a}}$ constant over $[t,\,t+\Delta t]$.
 
 *Rotation.* With constant $\boldsymbol{\omega}$, the ODE $\dot{\mathbf{R}}=\mathbf{R}\lfloor\boldsymbol{\omega}\rfloor_\times$ has the **exact** solution
 
-$$\mathbf{R}_{t+\Delta t} = \mathbf{R}_t\,\mathrm{Exp}\big((\tilde{\boldsymbol{\omega}}_t - \mathbf{b}^g_t - \boldsymbol{\eta}^g_t)\Delta t\big)$$
+$$\mathbf{R}_{t+\Delta t} = \mathbf{R}_t\,\mathrm{Exp}\big((\tilde{\boldsymbol{\omega}}_t - \mathbf{b}^g_t - \boldsymbol{\eta}^g_t)\Delta t\big)\tag{1.10}$$
 
 That is where $\mathrm{Exp}$ comes from — not an approximation, but the matrix exponential solving a linear ODE on the group. It ceases to be exact only when $\boldsymbol{\omega}$ *rotates* within the interval, which is precisely what coning correction addresses.
 
 *Velocity.* Integrate once, holding $\mathbf{R}_\tau \approx \mathbf{R}_t$:
 
-$$\mathbf{v}_{t+\Delta t} = \mathbf{v}_t + \int_t^{t+\Delta t}\!\!\big[\mathbf{g} + \mathbf{R}_\tau(\cdot)\big]\,d\tau \approx \mathbf{v}_t + \mathbf{g}\Delta t + \mathbf{R}_t(\tilde{\mathbf{a}}_t - \mathbf{b}^a_t - \boldsymbol{\eta}^a_t)\Delta t$$
+$$\mathbf{v}_{t+\Delta t} = \mathbf{v}_t + \int_t^{t+\Delta t}\!\!\big[\mathbf{g} + \mathbf{R}_\tau(\cdot)\big]\,d\tau \approx \mathbf{v}_t + \mathbf{g}\Delta t + \mathbf{R}_t(\tilde{\mathbf{a}}_t - \mathbf{b}^a_t - \boldsymbol{\eta}^a_t)\Delta t\tag{1.11}$$
 
 *Position.* Integrate twice; the double integral of a constant produces the $\tfrac{1}{2}(\cdot)\Delta t^2$ terms:
 
-$$\mathbf{p}_{t+\Delta t} = \mathbf{p}_t + \mathbf{v}_t\Delta t + \tfrac{1}{2}\mathbf{g}\Delta t^2 + \tfrac{1}{2}\mathbf{R}_t(\tilde{\mathbf{a}}_t - \mathbf{b}^a_t - \boldsymbol{\eta}^a_t)\Delta t^2$$
+$$\mathbf{p}_{t+\Delta t} = \mathbf{p}_t + \mathbf{v}_t\Delta t + \tfrac{1}{2}\mathbf{g}\Delta t^2 + \tfrac{1}{2}\mathbf{R}_t(\tilde{\mathbf{a}}_t - \mathbf{b}^a_t - \boldsymbol{\eta}^a_t)\Delta t^2\tag{1.12}$$
 
 The $\mathbf{R}_\tau\approx\mathbf{R}_t$ hold is the **only real approximation in the entire derivation**. Replacing it with $\tfrac{1}{2}(\mathbf{R}_t+\mathbf{R}_{t+\Delta t})$ is midpoint integration — same structure, better accuracy, free.
 
 **Step 4 — chain from $i$ to $j$.** Apply the one-step maps repeatedly. Rotations **telescope** into a product; velocities and positions **sum**, with the gravity terms collecting because $\mathbf{g}$ is constant ($\sum_k\mathbf{g}\Delta t = \mathbf{g}\Delta t_{ij}$):
 
-$$\mathbf{R}_j = \mathbf{R}_i \prod_{k=i}^{j-1}\mathrm{Exp}\big((\tilde{\boldsymbol{\omega}}_k - \mathbf{b}^g_k - \boldsymbol{\eta}^g_k)\Delta t\big)$$
+$$\mathbf{R}_j = \mathbf{R}_i \prod_{k=i}^{j-1}\mathrm{Exp}\big((\tilde{\boldsymbol{\omega}}_k - \mathbf{b}^g_k - \boldsymbol{\eta}^g_k)\Delta t\big)\tag{1.13}$$
 
-$$\mathbf{v}_j = \mathbf{v}_i + \mathbf{g}\Delta t_{ij} + \sum_{k}\mathbf{R}_k(\tilde{\mathbf{a}}_k - \mathbf{b}^a_k - \boldsymbol{\eta}^a_k)\Delta t$$
+$$\mathbf{v}_j = \mathbf{v}_i + \mathbf{g}\Delta t_{ij} + \sum_{k}\mathbf{R}_k(\tilde{\mathbf{a}}_k - \mathbf{b}^a_k - \boldsymbol{\eta}^a_k)\Delta t\tag{1.14}$$
 
-$$\mathbf{p}_j = \mathbf{p}_i + \sum_k \left[\mathbf{v}_k\Delta t + \tfrac{1}{2}\mathbf{g}\Delta t^2 + \tfrac{1}{2}\mathbf{R}_k(\tilde{\mathbf{a}}_k - \mathbf{b}^a_k - \boldsymbol{\eta}^a_k)\Delta t^2\right]$$
+$$\mathbf{p}_j = \mathbf{p}_i + \sum_k \left[\mathbf{v}_k\Delta t + \tfrac{1}{2}\mathbf{g}\Delta t^2 + \tfrac{1}{2}\mathbf{R}_k(\tilde{\mathbf{a}}_k - \mathbf{b}^a_k - \boldsymbol{\eta}^a_k)\Delta t^2\right]\tag{1.15}$$
 
 Worth checking that the position gravity term collapses correctly. Substituting $\mathbf{v}_k = \mathbf{v}_i + \mathbf{g}(k-i)\Delta t + \dots$ with $n = j-i$:
 
-$$\underbrace{\mathbf{g}\Delta t^2\frac{n(n-1)}{2}}_{\text{from } \sum_k \mathbf{v}_k\Delta t} + \underbrace{\mathbf{g}\Delta t^2\frac{n}{2}}_{\text{from } \sum_k \tfrac{1}{2}\mathbf{g}\Delta t^2} = \frac{\mathbf{g}\,n^2\Delta t^2}{2} = \tfrac{1}{2}\mathbf{g}\Delta t_{ij}^2 \;\;\checkmark$$
+$$\underbrace{\mathbf{g}\Delta t^2\frac{n(n-1)}{2}}_{\text{from } \sum_k \mathbf{v}_k\Delta t} + \underbrace{\mathbf{g}\Delta t^2\frac{n}{2}}_{\text{from } \sum_k \tfrac{1}{2}\mathbf{g}\Delta t^2} = \frac{\mathbf{g}\,n^2\Delta t^2}{2} = \tfrac{1}{2}\mathbf{g}\Delta t_{ij}^2 \;\;\checkmark\tag{1.16}$$
 
 which is exactly the $\tfrac{1}{2}\mathbf{g}\Delta t_{ij}^2$ appearing on the left-hand side of the $\Delta\mathbf{p}_{ij}$ definition in §1.4.
 
@@ -157,11 +157,11 @@ Look at where $\mathbf{R}_k$ sits in the sums above. **Every term depends on the
 
 Move the $i$-frame quantities to the left-hand side. Define **relative** increments that depend only on the IMU samples and the bias:
 
-$$\boxed{\Delta\mathbf{R}_{ij} \triangleq \mathbf{R}_i^\top\mathbf{R}_j = \prod_{k=i}^{j-1}\mathrm{Exp}\big((\tilde{\boldsymbol{\omega}}_k - \mathbf{b}^g - \boldsymbol{\eta}^g_k)\Delta t\big)}$$
+$$\boxed{\Delta\mathbf{R}_{ij} \triangleq \mathbf{R}_i^\top\mathbf{R}_j = \prod_{k=i}^{j-1}\mathrm{Exp}\big((\tilde{\boldsymbol{\omega}}_k - \mathbf{b}^g - \boldsymbol{\eta}^g_k)\Delta t\big)}\tag{1.17}$$
 
-$$\boxed{\Delta\mathbf{v}_{ij} \triangleq \mathbf{R}_i^\top(\mathbf{v}_j - \mathbf{v}_i - \mathbf{g}\Delta t_{ij}) = \sum_{k}\Delta\mathbf{R}_{ik}(\tilde{\mathbf{a}}_k - \mathbf{b}^a - \boldsymbol{\eta}^a_k)\Delta t}$$
+$$\boxed{\Delta\mathbf{v}_{ij} \triangleq \mathbf{R}_i^\top(\mathbf{v}_j - \mathbf{v}_i - \mathbf{g}\Delta t_{ij}) = \sum_{k}\Delta\mathbf{R}_{ik}(\tilde{\mathbf{a}}_k - \mathbf{b}^a - \boldsymbol{\eta}^a_k)\Delta t}\tag{1.18}$$
 
-$$\boxed{\Delta\mathbf{p}_{ij} \triangleq \mathbf{R}_i^\top(\mathbf{p}_j - \mathbf{p}_i - \mathbf{v}_i\Delta t_{ij} - \tfrac{1}{2}\mathbf{g}\Delta t_{ij}^2) = \sum_k\left[\Delta\mathbf{v}_{ik}\Delta t + \tfrac{1}{2}\Delta\mathbf{R}_{ik}(\tilde{\mathbf{a}}_k - \mathbf{b}^a - \boldsymbol{\eta}^a_k)\Delta t^2\right]}$$
+$$\boxed{\Delta\mathbf{p}_{ij} \triangleq \mathbf{R}_i^\top(\mathbf{p}_j - \mathbf{p}_i - \mathbf{v}_i\Delta t_{ij} - \tfrac{1}{2}\mathbf{g}\Delta t_{ij}^2) = \sum_k\left[\Delta\mathbf{v}_{ik}\Delta t + \tfrac{1}{2}\Delta\mathbf{R}_{ik}(\tilde{\mathbf{a}}_k - \mathbf{b}^a - \boldsymbol{\eta}^a_k)\Delta t^2\right]}\tag{1.19}$$
 
 The right-hand sides contain **no** $\mathbf{R}_i, \mathbf{v}_i, \mathbf{p}_i$ — only IMU samples and the bias. That single property is the whole of preintegration, so it is worth being explicit about what it buys.
 
@@ -202,17 +202,17 @@ The intuition, if the algebra obscures it: storing the motion between two keyfra
 
 Separate the noise-free part $\Delta\bar{\mathbf{R}}$ from perturbation. Using the right-Jacobian BCH identity, the *measurement* equals the noise-free value perturbed by noise:
 
-$$\Delta\tilde{\mathbf{R}}_{ij} = \Delta\bar{\mathbf{R}}_{ij}\,\mathrm{Exp}(\delta\boldsymbol{\phi}_{ij}), \quad \Delta\tilde{\mathbf{v}}_{ij} = \Delta\bar{\mathbf{v}}_{ij} + \delta\mathbf{v}_{ij}, \quad \Delta\tilde{\mathbf{p}}_{ij} = \Delta\bar{\mathbf{p}}_{ij} + \delta\mathbf{p}_{ij}$$
+$$\Delta\tilde{\mathbf{R}}_{ij} = \Delta\bar{\mathbf{R}}_{ij}\,\mathrm{Exp}(\delta\boldsymbol{\phi}_{ij}), \quad \Delta\tilde{\mathbf{v}}_{ij} = \Delta\bar{\mathbf{v}}_{ij} + \delta\mathbf{v}_{ij}, \quad \Delta\tilde{\mathbf{p}}_{ij} = \Delta\bar{\mathbf{p}}_{ij} + \delta\mathbf{p}_{ij}\tag{1.20}$$
 
 **Mind the direction of this definition.** All three must perturb the *same* way — measurement $=$ truth $\oplus$ noise. Forster (eq. 35–37) and Qiu's derivation write the algebraically identical inverse form, solving for the true value instead:
 
-$$\Delta\mathbf{R}_{ij} = \Delta\tilde{\mathbf{R}}_{ij}\,\mathrm{Exp}(-\delta\boldsymbol{\phi}_{ij}), \quad \Delta\mathbf{v}_{ij} = \Delta\tilde{\mathbf{v}}_{ij} - \delta\mathbf{v}_{ij}, \quad \Delta\mathbf{p}_{ij} = \Delta\tilde{\mathbf{p}}_{ij} - \delta\mathbf{p}_{ij}$$
+$$\Delta\mathbf{R}_{ij} = \Delta\tilde{\mathbf{R}}_{ij}\,\mathrm{Exp}(-\delta\boldsymbol{\phi}_{ij}), \quad \Delta\mathbf{v}_{ij} = \Delta\tilde{\mathbf{v}}_{ij} - \delta\mathbf{v}_{ij}, \quad \Delta\mathbf{p}_{ij} = \Delta\tilde{\mathbf{p}}_{ij} - \delta\mathbf{p}_{ij}\tag{1.21}$$
 
-Writing $\mathrm{Exp}(-\delta\boldsymbol{\phi})$ alongside $+\,\delta\mathbf{v}$ — mixing the two forms in one line — silently flips the sign of $\delta\boldsymbol{\phi}$ relative to the $\mathbf{A}$ recursion below, and the resulting covariance is wrong in the rotation block only. It is a hard bug to see because $\boldsymbol{\Sigma}$ stays symmetric positive-definite and merely mis-weights.
+Writing $\mathrm{Exp}(-\delta\boldsymbol{\phi})$ alongside $+\,\delta\mathbf{v}$ — mixing the two forms in one line — silently flips the sign of $\delta\boldsymbol{\phi}$ relative to the $\mathbf{A}$ recursion (1.23) below, and the resulting covariance is wrong in the rotation block only. It is a hard bug to see because $\boldsymbol{\Sigma}$ stays symmetric positive-definite and merely mis-weights.
 
 The 9-dimensional noise vector $\boldsymbol{\eta}_{ij} = [\delta\boldsymbol{\phi}_{ij}, \delta\mathbf{v}_{ij}, \delta\mathbf{p}_{ij}]^\top$ propagates linearly:
 
-$$\boldsymbol{\eta}_{ij} = \mathbf{A}_{j-1}\boldsymbol{\eta}_{ij-1} + \mathbf{B}_{j-1}\boldsymbol{\eta}^d_{j-1}$$
+$$\boldsymbol{\eta}_{ij} = \mathbf{A}_{j-1}\boldsymbol{\eta}_{ij-1} + \mathbf{B}_{j-1}\boldsymbol{\eta}^d_{j-1}\tag{1.22}$$
 
 $$
 \mathbf{A}_{k} = \begin{bmatrix}
@@ -225,10 +225,10 @@ $$
 \mathbf{J}^k_r\Delta t & \mathbf{0}\\
 \mathbf{0} & \Delta\tilde{\mathbf{R}}_{ik}\Delta t\\
 \mathbf{0} & \tfrac{1}{2}\Delta\tilde{\mathbf{R}}_{ik}\Delta t^2
-\end{bmatrix}
+\end{bmatrix}\tag{1.23}
 $$
 
-$$\boldsymbol{\Sigma}_{ij} = \mathbf{A}_{j-1}\boldsymbol{\Sigma}_{ij-1}\mathbf{A}_{j-1}^\top + \mathbf{B}_{j-1}\boldsymbol{\Sigma}^\eta\mathbf{B}_{j-1}^\top$$
+$$\boldsymbol{\Sigma}_{ij} = \mathbf{A}_{j-1}\boldsymbol{\Sigma}_{ij-1}\mathbf{A}_{j-1}^\top + \mathbf{B}_{j-1}\boldsymbol{\Sigma}^\eta\mathbf{B}_{j-1}^\top\tag{1.24}$$
 
 This 9×9 (or 15×15 in the "combined" variant that carries bias) covariance becomes the noise model of the factor. It grows without bound with $\Delta t_{ij}$, which is *correct* — it's why a long gap between keyframes automatically down-weights the IMU factor without any special-casing.
 
@@ -236,19 +236,19 @@ This 9×9 (or 15×15 in the "combined" variant that carries bias) covariance bec
 
 $\Delta\bar{\mathbf{R}}, \Delta\bar{\mathbf{v}}, \Delta\bar{\mathbf{p}}$ were computed at a linearization bias $\bar{\mathbf{b}}$. The optimizer will change the bias estimate. Rather than re-integrate, store first-order Jacobians during integration and apply a linear correction:
 
-$$\Delta\bar{\mathbf{R}}_{ij}(\mathbf{b}^g) \approx \Delta\bar{\mathbf{R}}_{ij}(\bar{\mathbf{b}}^g)\,\mathrm{Exp}\!\left(\frac{\partial\Delta\bar{\mathbf{R}}_{ij}}{\partial\mathbf{b}^g}\delta\mathbf{b}^g\right)$$
+$$\Delta\bar{\mathbf{R}}_{ij}(\mathbf{b}^g) \approx \Delta\bar{\mathbf{R}}_{ij}(\bar{\mathbf{b}}^g)\,\mathrm{Exp}\!\left(\frac{\partial\Delta\bar{\mathbf{R}}_{ij}}{\partial\mathbf{b}^g}\delta\mathbf{b}^g\right)\tag{1.25}$$
 
-$$\Delta\bar{\mathbf{v}}_{ij}(\mathbf{b}) \approx \Delta\bar{\mathbf{v}}_{ij}(\bar{\mathbf{b}}) + \frac{\partial\Delta\bar{\mathbf{v}}_{ij}}{\partial\mathbf{b}^g}\delta\mathbf{b}^g + \frac{\partial\Delta\bar{\mathbf{v}}_{ij}}{\partial\mathbf{b}^a}\delta\mathbf{b}^a$$
+$$\Delta\bar{\mathbf{v}}_{ij}(\mathbf{b}) \approx \Delta\bar{\mathbf{v}}_{ij}(\bar{\mathbf{b}}) + \frac{\partial\Delta\bar{\mathbf{v}}_{ij}}{\partial\mathbf{b}^g}\delta\mathbf{b}^g + \frac{\partial\Delta\bar{\mathbf{v}}_{ij}}{\partial\mathbf{b}^a}\delta\mathbf{b}^a\tag{1.26}$$
 
-$$\Delta\bar{\mathbf{p}}_{ij}(\mathbf{b}) \approx \Delta\bar{\mathbf{p}}_{ij}(\bar{\mathbf{b}}) + \frac{\partial\Delta\bar{\mathbf{p}}_{ij}}{\partial\mathbf{b}^g}\delta\mathbf{b}^g + \frac{\partial\Delta\bar{\mathbf{p}}_{ij}}{\partial\mathbf{b}^a}\delta\mathbf{b}^a$$
+$$\Delta\bar{\mathbf{p}}_{ij}(\mathbf{b}) \approx \Delta\bar{\mathbf{p}}_{ij}(\bar{\mathbf{b}}) + \frac{\partial\Delta\bar{\mathbf{p}}_{ij}}{\partial\mathbf{b}^g}\delta\mathbf{b}^g + \frac{\partial\Delta\bar{\mathbf{p}}_{ij}}{\partial\mathbf{b}^a}\delta\mathbf{b}^a\tag{1.27}$$
 
-These five Jacobians propagate incrementally alongside the mean and covariance (recursions in Forster §III-C, implemented in §1.8 below). In closed form they are:
+These five Jacobians propagate incrementally alongside the mean and covariance (recursions in Forster §III-C, implemented in §1.8 below). In closed form they are (1.28)–(1.30):
 
-$$\frac{\partial\Delta\bar{\mathbf{R}}_{ij}}{\partial\mathbf{b}^g} = -\sum_{k=i}^{j-1}\Delta\bar{\mathbf{R}}_{k+1,j}^\top\,\mathbf{J}_r^k\,\Delta t$$
+$$\frac{\partial\Delta\bar{\mathbf{R}}_{ij}}{\partial\mathbf{b}^g} = -\sum_{k=i}^{j-1}\Delta\bar{\mathbf{R}}_{k+1,j}^\top\,\mathbf{J}_r^k\,\Delta t\tag{1.28}$$
 
-$$\frac{\partial\Delta\bar{\mathbf{v}}_{ij}}{\partial\mathbf{b}^a} = -\sum_{k=i}^{j-1}\Delta\bar{\mathbf{R}}_{ik}\Delta t, \qquad \frac{\partial\Delta\bar{\mathbf{v}}_{ij}}{\partial\mathbf{b}^g} = -\sum_{k=i}^{j-1}\Delta\bar{\mathbf{R}}_{ik}\lfloor\tilde{\mathbf{a}}_k-\bar{\mathbf{b}}^a\rfloor_\times\frac{\partial\Delta\bar{\mathbf{R}}_{ik}}{\partial\mathbf{b}^g}\Delta t$$
+$$\frac{\partial\Delta\bar{\mathbf{v}}_{ij}}{\partial\mathbf{b}^a} = -\sum_{k=i}^{j-1}\Delta\bar{\mathbf{R}}_{ik}\Delta t, \qquad \frac{\partial\Delta\bar{\mathbf{v}}_{ij}}{\partial\mathbf{b}^g} = -\sum_{k=i}^{j-1}\Delta\bar{\mathbf{R}}_{ik}\lfloor\tilde{\mathbf{a}}_k-\bar{\mathbf{b}}^a\rfloor_\times\frac{\partial\Delta\bar{\mathbf{R}}_{ik}}{\partial\mathbf{b}^g}\Delta t\tag{1.29}$$
 
-$$\frac{\partial\Delta\bar{\mathbf{p}}_{ij}}{\partial\mathbf{b}^a} = \sum_{k=i}^{j-1}\left[\frac{\partial\Delta\bar{\mathbf{v}}_{ik}}{\partial\mathbf{b}^a}\Delta t - \tfrac{1}{2}\Delta\bar{\mathbf{R}}_{ik}\Delta t^2\right], \qquad \frac{\partial\Delta\bar{\mathbf{p}}_{ij}}{\partial\mathbf{b}^g} = \sum_{k=i}^{j-1}\left[\frac{\partial\Delta\bar{\mathbf{v}}_{ik}}{\partial\mathbf{b}^g}\Delta t - \tfrac{1}{2}\Delta\bar{\mathbf{R}}_{ik}\lfloor\tilde{\mathbf{a}}_k-\bar{\mathbf{b}}^a\rfloor_\times\frac{\partial\Delta\bar{\mathbf{R}}_{ik}}{\partial\mathbf{b}^g}\Delta t^2\right]$$
+$$\frac{\partial\Delta\bar{\mathbf{p}}_{ij}}{\partial\mathbf{b}^a} = \sum_{k=i}^{j-1}\left[\frac{\partial\Delta\bar{\mathbf{v}}_{ik}}{\partial\mathbf{b}^a}\Delta t - \tfrac{1}{2}\Delta\bar{\mathbf{R}}_{ik}\Delta t^2\right], \qquad \frac{\partial\Delta\bar{\mathbf{p}}_{ij}}{\partial\mathbf{b}^g} = \sum_{k=i}^{j-1}\left[\frac{\partial\Delta\bar{\mathbf{v}}_{ik}}{\partial\mathbf{b}^g}\Delta t - \tfrac{1}{2}\Delta\bar{\mathbf{R}}_{ik}\lfloor\tilde{\mathbf{a}}_k-\bar{\mathbf{b}}^a\rfloor_\times\frac{\partial\Delta\bar{\mathbf{R}}_{ik}}{\partial\mathbf{b}^g}\Delta t^2\right]\tag{1.30}$$
 
 Note the nesting: $\partial\Delta\bar{\mathbf{p}}/\partial\mathbf{b}$ is defined in terms of $\partial\Delta\bar{\mathbf{v}}/\partial\mathbf{b}$, which is itself defined in terms of $\partial\Delta\bar{\mathbf{R}}/\partial\mathbf{b}^g$. **That dependency chain dictates the update order in code** — position Jacobians first, then velocity, then rotation, each consuming the *previous* step's value. Update $\partial\Delta\bar{\mathbf{R}}/\partial\mathbf{b}^g$ first and every downstream Jacobian is one step out of date, which produces a bias correction that is subtly wrong only for large $\|\delta\mathbf{b}\|$ — i.e. exactly when you need it. The pseudocode in §1.8 is written in this order deliberately.
 
@@ -256,21 +256,21 @@ Note the nesting: $\partial\Delta\bar{\mathbf{p}}/\partial\mathbf{b}$ is defined
 
 ## 1.7 Residuals
 
-$$\mathbf{r}_{\Delta\mathbf{R}_{ij}} = \mathrm{Log}\!\left(\left[\Delta\tilde{\mathbf{R}}_{ij}(\bar{\mathbf{b}}^g)\,\mathrm{Exp}\!\left(\tfrac{\partial\Delta\bar{\mathbf{R}}_{ij}}{\partial\mathbf{b}^g}\delta\mathbf{b}^g\right)\right]^\top \mathbf{R}_i^\top\mathbf{R}_j\right)$$
+$$\mathbf{r}_{\Delta\mathbf{R}_{ij}} = \mathrm{Log}\!\left(\left[\Delta\tilde{\mathbf{R}}_{ij}(\bar{\mathbf{b}}^g)\,\mathrm{Exp}\!\left(\tfrac{\partial\Delta\bar{\mathbf{R}}_{ij}}{\partial\mathbf{b}^g}\delta\mathbf{b}^g\right)\right]^\top \mathbf{R}_i^\top\mathbf{R}_j\right)\tag{1.31}$$
 
-$$\mathbf{r}_{\Delta\mathbf{v}_{ij}} = \mathbf{R}_i^\top(\mathbf{v}_j - \mathbf{v}_i - \mathbf{g}\Delta t_{ij}) - \Delta\tilde{\mathbf{v}}_{ij}(\mathbf{b})$$
+$$\mathbf{r}_{\Delta\mathbf{v}_{ij}} = \mathbf{R}_i^\top(\mathbf{v}_j - \mathbf{v}_i - \mathbf{g}\Delta t_{ij}) - \Delta\tilde{\mathbf{v}}_{ij}(\mathbf{b})\tag{1.32}$$
 
-$$\mathbf{r}_{\Delta\mathbf{p}_{ij}} = \mathbf{R}_i^\top\left(\mathbf{p}_j - \mathbf{p}_i - \mathbf{v}_i\Delta t_{ij} - \tfrac{1}{2}\mathbf{g}\Delta t_{ij}^2\right) - \Delta\tilde{\mathbf{p}}_{ij}(\mathbf{b})$$
+$$\mathbf{r}_{\Delta\mathbf{p}_{ij}} = \mathbf{R}_i^\top\left(\mathbf{p}_j - \mathbf{p}_i - \mathbf{v}_i\Delta t_{ij} - \tfrac{1}{2}\mathbf{g}\Delta t_{ij}^2\right) - \Delta\tilde{\mathbf{p}}_{ij}(\mathbf{b})\tag{1.33}$$
 
 Plus a bias random-walk factor between consecutive bias nodes:
 
-$$\mathbf{r}_b = \mathbf{b}_j - \mathbf{b}_i, \qquad \boldsymbol{\Sigma}_b = \Delta t_{ij}\,\mathrm{diag}(\sigma_{bg}^2\mathbf{I}, \sigma_{ba}^2\mathbf{I})$$
+$$\mathbf{r}_b = \mathbf{b}_j - \mathbf{b}_i, \qquad \boldsymbol{\Sigma}_b = \Delta t_{ij}\,\mathrm{diag}(\sigma_{bg}^2\mathbf{I}, \sigma_{ba}^2\mathbf{I})\tag{1.34}$$
 
 The IMU factor is therefore a **15-dimensional residual** connecting $\{\mathbf{R}_i,\mathbf{p}_i,\mathbf{v}_i,\mathbf{b}_i\}$ and $\{\mathbf{R}_j,\mathbf{p}_j,\mathbf{v}_j,\mathbf{b}_j\}$ — six variables in GTSAM's `ImuFactor` + `BetweenFactor<Bias>`, or four in `CombinedImuFactor` which folds the bias evolution in.
 
 **The analytic Jacobians in full.** These are taken with respect to the *increments* used to lift each state, under the right perturbation $\mathbf{R} \leftarrow \mathbf{R}\,\mathrm{Exp}(\delta\boldsymbol{\phi})$:
 
-$$\mathbf{R}\leftarrow\mathbf{R}\,\mathrm{Exp}(\delta\boldsymbol{\phi}), \qquad \mathbf{p}\leftarrow\mathbf{p}+\mathbf{R}\,\delta\mathbf{p}, \qquad \mathbf{v}\leftarrow\mathbf{v}+\delta\mathbf{v}, \qquad \mathbf{b}\leftarrow\mathbf{b}+\delta\mathbf{b}$$
+$$\mathbf{R}\leftarrow\mathbf{R}\,\mathrm{Exp}(\delta\boldsymbol{\phi}), \qquad \mathbf{p}\leftarrow\mathbf{p}+\mathbf{R}\,\delta\mathbf{p}, \qquad \mathbf{v}\leftarrow\mathbf{v}+\delta\mathbf{v}, \qquad \mathbf{b}\leftarrow\mathbf{b}+\delta\mathbf{b}\tag{1.35}$$
 
 | | $\mathbf{r}_{\Delta\mathbf{R}}$ | $\mathbf{r}_{\Delta\mathbf{v}}$ | $\mathbf{r}_{\Delta\mathbf{p}}$ |
 |---|---|---|---|
@@ -283,15 +283,17 @@ $$\mathbf{R}\leftarrow\mathbf{R}\,\mathrm{Exp}(\delta\boldsymbol{\phi}), \qquad 
 | $\delta\mathbf{b}^g_i$ | see below | $-\dfrac{\partial\Delta\bar{\mathbf{v}}_{ij}}{\partial\mathbf{b}^g}$ | $-\dfrac{\partial\Delta\bar{\mathbf{p}}_{ij}}{\partial\mathbf{b}^g}$ |
 | $\delta\mathbf{b}^a_i$ | $\mathbf{0}$ | $-\dfrac{\partial\Delta\bar{\mathbf{v}}_{ij}}{\partial\mathbf{b}^a}$ | $-\dfrac{\partial\Delta\bar{\mathbf{p}}_{ij}}{\partial\mathbf{b}^a}$ |
 
-The gyro-bias column of $\mathbf{r}_{\Delta\mathbf{R}}$ is the only genuinely awkward one, because the bias enters *inside* a $\mathrm{Log}$ through another $\mathrm{Exp}$:
+The gyro-bias column of $\mathbf{r}_{\Delta\mathbf{R}}$ (1.36) is the only genuinely awkward one, because the bias enters *inside* a $\mathrm{Log}$ through another $\mathrm{Exp}$:
 
-$$\frac{\partial\mathbf{r}_{\Delta\mathbf{R}}}{\partial\delta\mathbf{b}^g_i} = -\mathbf{J}_r^{-1}(\mathbf{r}_{\Delta\mathbf{R}})\,\mathrm{Exp}(-\mathbf{r}_{\Delta\mathbf{R}})\,\mathbf{J}_r\!\left(\frac{\partial\Delta\bar{\mathbf{R}}_{ij}}{\partial\mathbf{b}^g}\delta\mathbf{b}^g_i\right)\frac{\partial\Delta\bar{\mathbf{R}}_{ij}}{\partial\mathbf{b}^g}$$
+$$\frac{\partial\mathbf{r}_{\Delta\mathbf{R}}}{\partial\delta\mathbf{b}^g_i} = -\mathbf{J}_r^{-1}(\mathbf{r}_{\Delta\mathbf{R}})\,\mathrm{Exp}(-\mathbf{r}_{\Delta\mathbf{R}})\,\mathbf{J}_r\!\left(\frac{\partial\Delta\bar{\mathbf{R}}_{ij}}{\partial\mathbf{b}^g}\delta\mathbf{b}^g_i\right)\frac{\partial\Delta\bar{\mathbf{R}}_{ij}}{\partial\mathbf{b}^g}\tag{1.36}$$
 
 **Why $\mathbf{p}$ is lifted as $\mathbf{p}+\mathbf{R}\,\delta\mathbf{p}$, and why it matters.** That convention is not arbitrary — it is what you get by right-multiplying the pose matrix $\mathbf{T}_i = \begin{bmatrix}\mathbf{R}_i & \mathbf{p}_i\\ \mathbf{0} & 1\end{bmatrix}$ by a perturbation $\delta\mathbf{T}_i$, which gives $\mathbf{R}_i\delta\mathbf{R}_i$ and $\mathbf{p}_i + \mathbf{R}_i\delta\mathbf{p}_i$ together. It keeps the increment body-resolved and consistent with the right perturbation already used for rotation, so $\delta\mathbf{p}$ means "displacement expressed in the body frame."
 
 The payoff is the clean $-\mathbf{I}$ and $\mathbf{R}_i^\top\mathbf{R}_j$ entries above. **If your code instead lifts position additively in the world frame** ($\mathbf{p}\leftarrow\mathbf{p}+\delta\mathbf{p}$, which is what a naive `Vector3` state does), those two entries become $-\mathbf{R}_i^\top$ and $+\mathbf{R}_i^\top$. Both conventions are correct; mixing the analytic Jacobian of one with the retraction of the other is a silent, direction-dependent convergence bug — the optimizer still descends, just along the wrong metric, so it converges slowly rather than failing outright.
 
 ## 1.8 Pseudocode
+
+Every line that implements a numbered equation cites it, so this reads as a direct transcription of §§1.1–1.7 rather than as free-standing code.
 
 ```
 struct Preintegrated:
@@ -303,27 +305,29 @@ struct Preintegrated:
     b_bar = (bg_bar, ba_bar)             # linearization bias
 
 integrate_measurement(P, w_tilde, a_tilde, dt):
-    w = w_tilde - P.b_bar.bg
-    a = a_tilde - P.b_bar.ba
-    dR_k  = Exp(w * dt)
-    Jr_k  = right_jacobian(w * dt)
+    w = w_tilde - P.b_bar.bg             # (1.5)  invert gyro model
+    a = a_tilde - P.b_bar.ba             # (1.6)  invert accel model
+    dR_k  = Exp(w * dt)                  # (1.10) one-step rotation, exact under ZOH
+    Jr_k  = right_jacobian(w * dt)       # J_r of §0.1, feeds B and J_dR_bg
 
     # --- mean (order matters: use OLD dR for v/p, then update dR) ---
-    P.dP += P.dV*dt + 0.5*P.dR*a*dt*dt
-    P.dV += P.dR*a*dt
-    P.dR  = normalize(P.dR * dR_k)
+    P.dP += P.dV*dt + 0.5*P.dR*a*dt*dt   # (1.19) dp summand
+    P.dV += P.dR*a*dt                    # (1.18) dv summand
+    P.dR  = normalize(P.dR * dR_k)       # (1.17) dR product
 
     # --- covariance ---
-    A = build_A(P.dR_old, a, dR_k, dt)   # 9x9, see §1.5
-    B = build_B(P.dR_old, Jr_k, dt)      # 9x6
-    P.Sigma = A @ P.Sigma @ A.T + B @ Sigma_eta @ B.T
+    A = build_A(P.dR_old, a, dR_k, dt)   # (1.23) 9x9
+    B = build_B(P.dR_old, Jr_k, dt)      # (1.23) 9x6
+    P.Sigma = A @ P.Sigma @ A.T + B @ Sigma_eta @ B.T      # (1.24)
 
-    # --- bias Jacobians (recursions) ---
-    P.J_dP_ba += P.J_dV_ba*dt - 0.5*P.dR_old*dt*dt
-    P.J_dP_bg += P.J_dV_bg*dt - 0.5*P.dR_old*skew(a)*P.J_dR_bg*dt*dt
-    P.J_dV_ba += -P.dR_old*dt
-    P.J_dV_bg += -P.dR_old*skew(a)*P.J_dR_bg*dt
-    P.J_dR_bg  = dR_k.T @ P.J_dR_bg - Jr_k*dt
+    # --- bias Jacobians: recursions equivalent to closed forms (1.28)-(1.30).
+    #     Order is load-bearing — each consumes the PREVIOUS step's value:
+    #     dP uses the old dV Jacobians, dV the old dR one (updated last).
+    P.J_dP_ba += P.J_dV_ba*dt - 0.5*P.dR_old*dt*dt                    # (1.30) b_a
+    P.J_dP_bg += P.J_dV_bg*dt - 0.5*P.dR_old*skew(a)*P.J_dR_bg*dt*dt  # (1.30) b_g
+    P.J_dV_ba += -P.dR_old*dt                                         # (1.29) b_a
+    P.J_dV_bg += -P.dR_old*skew(a)*P.J_dR_bg*dt                       # (1.29) b_g
+    P.J_dR_bg  = dR_k.T @ P.J_dR_bg - Jr_k*dt                         # (1.28)
 
     P.dt_total += dt
 
@@ -331,11 +335,14 @@ corrected(P, b_new):
     d_bg = b_new.bg - P.b_bar.bg
     d_ba = b_new.ba - P.b_bar.ba
     if norm(d_bg) > TH_G or norm(d_ba) > TH_A:
-        return repropagate(P, b_new)     # full re-integration
-    dR = P.dR * Exp(P.J_dR_bg @ d_bg)
-    dV = P.dV + P.J_dV_bg@d_bg + P.J_dV_ba@d_ba
-    dP = P.dP + P.J_dP_bg@d_bg + P.J_dP_ba@d_ba
+        return repropagate(P, b_new)     # linear patch invalid — re-integrate
+    dR = P.dR * Exp(P.J_dR_bg @ d_bg)                      # (1.25)
+    dV = P.dV + P.J_dV_bg@d_bg + P.J_dV_ba@d_ba            # (1.26)
+    dP = P.dP + P.J_dP_bg@d_bg + P.J_dP_ba@d_ba            # (1.27)
     return (dR, dV, dP)
+
+# The (dR, dV, dP, Sigma) this produces is the measurement carried by the IMU
+# factor; the residuals (1.31)-(1.33) difference it against the current states.
 ```
 
 Two implementation notes that cost people days:
