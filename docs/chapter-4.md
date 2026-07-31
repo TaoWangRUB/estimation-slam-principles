@@ -322,6 +322,8 @@ The landmark is gone. You get a landmark-free EKF update whose cost is linear in
 
 ## 4.6 Comparison
 
+The first table is the usual high-level one. The second is the interesting one: it comes from reading the three source trees rather than the three papers.
+
 | | ORB-SLAM3 | cuVSLAM | VINS-Fusion | OpenVINS |
 |---|---|---|---|---|
 | Backend | Local BA + pose graph + full BA | Local opt + pose graph (async) | Fixed-lag smoother (Ceres) | MSCKF filter |
@@ -332,4 +334,52 @@ The landmark is gone. You get a landmark-free EKF update whose cost is linear in
 | Hardware | CPU, multi-thread | **GPU / Jetson** (Orin, Thor) | CPU | CPU |
 | Licence | GPLv3 | **NVIDIA Community License** (prebuilt core + open bindings) | GPLv3 | GPLv3 |
 
-The GPLv3 column is not a footnote — it is often the actual decision driver in a commercial robot, and mentioning it signals you've shipped something rather than only benchmarked.
+The GPLv3 row is not a footnote — it is often the actual decision driver in a commercial robot, and mentioning it signals you've shipped something rather than only benchmarked.
+
+### At the level of the source
+
+Traced from ORB-SLAM3 (`src/ImuTypes.cc`, `Tracking.cc`, `LocalMapping.cc`, `LoopClosing.cc`), cuVSLAM v15.0.0 (`libs/imu`, `libs/pipelines`, `libs/sof`), and VINS-Fusion (`vins/src/factor`, `estimator`, `initial`).
+
+| | **ORB-SLAM3** | **cuVSLAM** | **VINS-Fusion** |
+|---|---|---|---|
+| Preintegration class | `IMU::Preintegrated` | `sba_imu::IMUPreintegration` | `IntegrationBase` |
+| Integration scheme | **Euler** — `dP`/`dV` use the *not-yet-updated* `dR` | **Euler** — identical | **Midpoint** — `midPointIntegration()` averages the two samples |
+| Rotation storage | `Matrix3f dR` + `NormalizeRotation()` | `Matrix3T dR` + `CalculateRotationFromSVD()` | `Quaterniond delta_q` |
+| Precision | `float` | `float` | `double` |
+| Bias Jacobians | `JRg, JVg, JVa, JPg, JPa` | `JRg, JVg, JVa, JPg, JPa` — *same names* | blocks of a 15×15 `jacobian` (`dp_dba`, `dq_dbg`, …) |
+| Covariance | `Matrix<float,15,15> C` | `Matrix9T` + separate 3×3 accel/gyro random-walk blocks | `Matrix<double,15,15> covariance` |
+| Re-integration | `Reintegrate()` | `Reintegrate()`, past `reintegration_thresh = 1e-4` | `repropagate(ba, bg)` |
+| Bias-corrected getters | `GetDeltaRotation/Velocity/Position(b)` | *same three names* | inline in `evaluate()` |
+| Frontend | ORB, 8-level pyramid (`ORBextractor`) | GFTT/Shi-Tomasi + KLT/LK/ST on GPU (`libs/sof`) | Shi-Tomasi + KLT (`feature_tracker`) |
+| Per-frame 3D work | project local map, pose-only BA | **resection only** — landmarks fetched from map; triangulation deferred to keyframes | triangulate in `feature_manager` |
+| Local optimization | g2o local BA (+ inertial) | Schur-complement bundler, CPU/GPU, cuNLS | Ceres fixed-lag, `MARGIN_OLD` / `MARGIN_SECOND_NEW` |
+| Gauge fixing | fixed keyframes in g2o | `prev_pose.info` = 1e6 on first 6 entries | marginalization prior |
+| Inertial init | 3-stage MAP: vision-only → inertial-only → joint | `SolveGyroBias` → `SolveGravityDirection` → `LinearAlignment` → `RefineGravity` | `initialStructure()` → SfM → `visualInitialAlign()` |
+| High-rate output | — | `Odometry::Track()` per frame | **`fastPredictIMU()`** — IMU propagation to now |
+| Online extrinsics | no | no | **`initial_ex_rotation`** — estimates camera↔IMU rotation |
+| Loop closure lives in | `LoopClosing` thread + Atlas merge | `slam/async_slam` + `loop_closure_solver` (RANSAC here) | separate **`loop_fusion` node** (DBoW2, pose graph) |
+
+**The finding worth the trip.** cuVSLAM's preintegration is not merely *a* Forster implementation — it is line-for-line ORB-SLAM3's, down to the member names and the statement order:
+
+```cpp
+// ORB-SLAM3, src/ImuTypes.cc            // cuVSLAM, libs/imu/imu_preintegration.cpp
+dP = dP + dV*dt + 0.5f*dR*acc*dt*dt;     dP += dV*dt + 0.5f*dR*lin_acc*dt*dt;
+dV = dV + dR*acc*dt;                     dV += dR*lin_acc*dt;
+JPa = JPa + JVa*dt - 0.5f*dR*dt*dt;      JPa += JVa*dt - 0.5f*dR*dt*dt;
+JVa = JVa - dR*dt;                       JVa -= dR*dt;
+JRg = dRi.deltaR.transpose()*JRg         JRg  = deltaR.transpose()*JRg
+      - dRi.rightJ*dt;                          - rightJ*dt;
+dR = NormalizeRotation(dR*dRi.deltaR);   dR   = CalculateRotationFromSVD(dR*deltaR);
+```
+
+ORB-SLAM3 even carries the comment *"rely on no-updated delta rotation"* on the `dP`/`dV` lines — the ordering constraint of [§2.6](chapter-2.md), stated in the code.
+
+**VINS-Fusion is the genuine dissenter**, and every difference is a deliberate trade:
+
+- **Midpoint over Euler.** `midPointIntegration()` averages consecutive gyro and accel samples. More accurate per step at the same rate — the free win §2.8 recommends — at the cost of departing from Forster as published.
+- **Quaternion over rotation matrix.** `delta_q` updated by a small-angle quaternion, so drift off the manifold is fixed by normalization rather than by an SVD projection.
+- **`double` over `float`.** Roughly 2× the memory traffic, which is exactly the wrong trade on a GPU — and is why the two GPU-adjacent implementations chose `float`.
+- **One 15×15 Jacobian block matrix** rather than five named 3×3 members: more general, less readable.
+- **It ships the two things the others lack for a real vehicle** — `fastPredictIMU()`, the output predictor of [§1.4](chapter-1.md)/[§2.9](chapter-2.md) that gives the controller a state *now*, and `initial_ex_rotation`, which calibrates the camera↔IMU rotation online.
+
+Read together: ORB-SLAM3 defined the reference implementation, cuVSLAM adopted it and moved the surrounding pipeline onto the GPU, and VINS-Fusion re-derived the numerics with different trade-offs and paid more attention to what a flight controller actually needs downstream.

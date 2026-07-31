@@ -40,7 +40,9 @@ Worth knowing: the document itself carries an erratum notice — it corrects a s
 - **cuNLS** — [github.com/nvidia-isaac/cuNLS](https://github.com/nvidia-isaac/cuNLS). NVIDIA's CUDA-accelerated nonlinear least-squares solver for bundle adjustment, pose-graph optimization and ICP-style alignment; bundled into cuVSLAM. The GPU counterpart to the solvers of Chapter 3.
 - **Mourikis & Roumeliotis**, *A Multi-State Constraint Kalman Filter for Vision-aided Inertial Navigation*, ICRA 2007. The MSCKF null-space projection of §4.5.
 - **Geneva, Eckenhoff, Lee, Yang, Huang**, *OpenVINS: A Research Platform for Visual-Inertial Estimation*, ICRA 2020. FEJ and observability-constrained consistency fixes.
-- **Qin, Li, Shen**, *VINS-Mono: A Robust and Versatile Monocular Visual-Inertial State Estimator*, IEEE T-RO 34(4), 2018. Midpoint integration in preintegration, and online time-offset calibration.
+- **Qin, Li, Shen**, *VINS-Mono: A Robust and Versatile Monocular Visual-Inertial State Estimator*, IEEE T-RO 34(4), 2018, and **VINS-Fusion** ([github.com/HKUST-Aerial-Robotics/VINS-Fusion](https://github.com/HKUST-Aerial-Robotics/VINS-Fusion)). Midpoint preintegration (`vins/src/factor/integration_base.h`), Ceres fixed-lag smoothing with two marginalization modes, `fastPredictIMU()` as output predictor, and online camera↔IMU extrinsic calibration (`initial/initial_ex_rotation`).
+
+The source-level comparison in §4.6 was traced against ORB-SLAM3 `src/ImuTypes.cc`/`Tracking.cc`/`LocalMapping.cc`/`LoopClosing.cc`, cuVSLAM v15.0.0 `libs/{imu,pipelines,sof}`, and VINS-Fusion `vins/src/{factor,estimator,initial}`.
 
 ## Factor graphs (Chapter 3)
 
