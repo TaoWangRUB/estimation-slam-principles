@@ -22,7 +22,7 @@ Both need Taylor fallbacks near $\theta \to 0$ (and $\theta \to \pi$ for Log). E
 
 $$\mathrm{Exp}(\boldsymbol{\phi})\,\mathbf{R} = \mathbf{R}\,\mathrm{Exp}(\mathbf{R}^\top\boldsymbol{\phi})$$
 
-It says a rotation can be *pushed through* an $\mathrm{Exp}$ at the cost of rotating the tangent vector. Every telescoping-product step in Chapter 1 — the noise propagation of §1.5 and the gyro-bias Jacobian of §1.6 — is that identity applied repeatedly to migrate all the $\mathrm{Exp}$ factors to one side. It follows from the first form together with $(\mathbf{R}\boldsymbol{\phi})^\wedge = \mathbf{R}\,\boldsymbol{\phi}^\wedge\mathbf{R}^\top$.
+It says a rotation can be *pushed through* an $\mathrm{Exp}$ at the cost of rotating the tangent vector. Every telescoping-product step in Chapter 2 — the noise propagation of §2.5 and the gyro-bias Jacobian of §2.6 — is that identity applied repeatedly to migrate all the $\mathrm{Exp}$ factors to one side. It follows from the first form together with $(\mathbf{R}\boldsymbol{\phi})^\wedge = \mathbf{R}\,\boldsymbol{\phi}^\wedge\mathbf{R}^\top$.
 
 **Right Jacobian** — the single most important object for on-manifold Jacobians:
 
@@ -59,4 +59,4 @@ A Gaussian on a manifold is defined in the tangent space at the mean:
 
 $$\mathbf{R} = \hat{\mathbf{R}}\,\mathrm{Exp}(\boldsymbol{\epsilon}), \qquad \boldsymbol{\epsilon} \sim \mathcal{N}(\mathbf{0}, \boldsymbol{\Sigma})$$
 
-This is a *concentrated* Gaussian and is only meaningful for small $\boldsymbol{\Sigma}$ (rule of thumb: standard deviation well under ~30°). It is why a 4-element quaternion in a state vector with a 4×4 covariance block is wrong — the covariance is necessarily singular along the norm-constraint direction. Everything in Chapter 1 and 2 follows from taking this seriously.
+This is a *concentrated* Gaussian and is only meaningful for small $\boldsymbol{\Sigma}$ (rule of thumb: standard deviation well under ~30°). It is why a 4-element quaternion in a state vector with a 4×4 covariance block is wrong — the covariance is necessarily singular along the norm-constraint direction. Everything in Chapter 2 and 2 follows from taking this seriously.

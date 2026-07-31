@@ -40,17 +40,22 @@ theme:
 nav:
   - Home: index.md
   - "Ch. 0 — Lie Group Primer": chapter-0.md
-  - "Ch. 1 — IMU Preintegration": chapter-1.md
-  - "Ch. 2 — GTSAM & Factor Graphs": chapter-2.md
-  - "Ch. 3 — Visual-Inertial Odometry": chapter-3.md
-  - "Ch. 4 — SLAM as a Whole": chapter-4.md
-  - "Ch. 5 — EKF / INS (PX4 & ArduPilot)": chapter-5.md
+  - "Ch. 1 — System Architecture": chapter-1.md
+  - "Ch. 2 — IMU Preintegration": chapter-2.md
+  - "Ch. 3 — GTSAM & Factor Graphs": chapter-3.md
+  - "Ch. 4 — Visual-Inertial Odometry": chapter-4.md
+  - "Ch. 5 — SLAM as a Whole": chapter-5.md
+  - "Ch. 6 — EKF / INS (PX4 & ArduPilot)": chapter-6.md
   - References: references.md
 
 markdown_extensions:
   - pymdownx.arithmatex:
       generic: true
-  - pymdownx.superfences
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.inlinehilite

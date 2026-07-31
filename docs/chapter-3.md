@@ -1,211 +1,177 @@
-# Chapter 3 — Visual-Inertial Odometry: ORB-SLAM3 and cuVSLAM
+# Chapter 3 — GTSAM and Factor Graphs
 
-## 3.1 The measurement model
+!!! abstract "Implements"
+    **`Backend` (§1.4).** Consumes `Factor[]` — including the `PreintegratedImu` built in Chapter 2 — and produces `NavState`/`Values`. Rate domains **C** and **D** of §1.3.
 
-A 3D landmark $\mathbf{X}_j$ in world coordinates, observed in camera $i$:
 
-$$\mathbf{u}_{ij} = \pi\!\left(\mathbf{T}_{CB}\,\mathbf{T}_{BW}(i)\,\mathbf{X}_j\right) + \boldsymbol{\eta}_{ij}, \qquad \boldsymbol{\eta}_{ij} \sim \mathcal{N}(\mathbf{0}, \sigma^2_{\text{px}}\mathbf{I})$$
+## 3.1 The formulation
 
-Pinhole projection:
+A factor graph is a bipartite graph: **variable nodes** $\mathbf{X} = \{\mathbf{x}_1,\dots,\mathbf{x}_n\}$ and **factor nodes** $\{\phi_i\}$, where each factor connects the subset of variables it constrains.
 
-$$\pi\!\left([X,Y,Z]^\top\right) = \begin{bmatrix} f_x X/Z + c_x \\ f_y Y/Z + c_y\end{bmatrix}$$
+$$p(\mathbf{X}\mid\mathbf{Z}) \propto \prod_i \phi_i(\mathbf{X}_i)$$
 
-Fisheye (Kannala-Brandt, which ORB-SLAM3 supports natively): $r = \sqrt{X^2+Y^2}$, $\theta = \arctan(r/Z)$, $\theta_d = \theta(1 + k_1\theta^2 + k_2\theta^4 + k_3\theta^6 + k_4\theta^8)$, then scale $[X,Y]$ by $\theta_d/r$.
+With Gaussian noise, $\phi_i(\mathbf{X}_i) = \exp\!\left(-\tfrac{1}{2}\|h_i(\mathbf{X}_i) - \mathbf{z}_i\|^2_{\boldsymbol{\Sigma}_i}\right)$, so MAP inference becomes nonlinear least squares:
 
-Reprojection Jacobian, factored through the chain rule:
+$$\mathbf{X}^\star = \arg\min_\mathbf{X}\ \sum_i \left\|h_i(\mathbf{X}_i) - \mathbf{z}_i\right\|^2_{\boldsymbol{\Sigma}_i}$$
 
-$$
-\frac{\partial\mathbf{u}}{\partial\delta\boldsymbol{\xi}} = \frac{\partial\pi}{\partial\mathbf{X}_C}\cdot\frac{\partial\mathbf{X}_C}{\partial\delta\boldsymbol{\xi}}, \qquad
-\frac{\partial\pi}{\partial\mathbf{X}_C} = \begin{bmatrix} f_x/Z & 0 & -f_x X/Z^2\\ 0 & f_y/Z & -f_y Y/Z^2\end{bmatrix}
-$$
+**Whitening.** Absorb $\boldsymbol{\Sigma}^{-1/2}$ (Cholesky) into the residual so every factor becomes unit-covariance and the problem is a plain $\|\cdot\|_2$ minimization. GTSAM does this internally; it is why `noiseModel::Diagonal::Sigmas` and `::Variances` are different functions and mixing them up silently mis-weights your graph by a square.
 
-$$\frac{\partial\mathbf{X}_C}{\partial\delta\boldsymbol{\xi}} = \begin{bmatrix}\mathbf{I} & -\lfloor\mathbf{X}_C\rfloor_\times\end{bmatrix} \quad\text{(right perturbation, }\delta\boldsymbol{\xi}=[\delta\boldsymbol{\rho},\delta\boldsymbol{\phi}]\text{)}$$
+## 3.2 Linearization and solution
 
-The $-f_x X/Z^2$ terms are why depth uncertainty dominates: a landmark at large $Z$ contributes almost nothing to translation observability. This is the analytical reason stereo baselines matter and why monocular VO at long range is essentially a bearing-only problem.
+Linearize at $\mathbf{X}^{(k)}$, in the **tangent space**:
 
-## 3.2 The VI bundle adjustment objective
+$$\mathbf{A}\,\delta = \mathbf{b}, \qquad \mathbf{A} = \begin{bmatrix}\boldsymbol{\Sigma}_1^{-1/2}\mathbf{J}_1\\ \vdots\end{bmatrix},\quad \mathbf{b} = \begin{bmatrix}\boldsymbol{\Sigma}_1^{-1/2}(\mathbf{z}_1 - h_1(\mathbf{X}^{(k)}))\\ \vdots\end{bmatrix}$$
 
-The joint MAP problem over a window of keyframes $\mathcal{K}$, landmarks $\mathcal{L}$:
+Normal equations: $\mathbf{A}^\top\mathbf{A}\,\delta = \mathbf{A}^\top\mathbf{b}$, where $\boldsymbol{\Lambda} = \mathbf{A}^\top\mathbf{A}$ is the **information matrix**. Solve by sparse Cholesky ($\boldsymbol{\Lambda} = \mathbf{R}^\top\mathbf{R}$) or QR on $\mathbf{A}$ directly (better conditioned — $\kappa(\mathbf{A}^\top\mathbf{A}) = \kappa(\mathbf{A})^2$).
 
-$$\min_{\{\mathbf{R}_i,\mathbf{p}_i,\mathbf{v}_i,\mathbf{b}_i\},\{\mathbf{X}_j\}}\ \sum_{i\in\mathcal{K}}\sum_{j\in\mathcal{L}_i}\rho\!\left(\left\|\mathbf{u}_{ij} - \pi(\mathbf{T}_i,\mathbf{X}_j)\right\|^2_{\boldsymbol{\Sigma}_{ij}}\right) \;+\; \sum_{i\in\mathcal{K}}\left\|\mathbf{r}_{\mathcal{I}(i,i+1)}\right\|^2_{\boldsymbol{\Sigma}_{\mathcal{I}}} \;+\; \left\|\mathbf{r}_{\text{prior}}\right\|^2_{\boldsymbol{\Sigma}_p}$$
+Then **retract** on the manifold, do not add:
 
-Three terms: visual reprojection (with a robust kernel $\rho$, typically Huber), the **IMU preintegration factors built in [Chapter 1](chapter-1.md)** — this objective is where they are finally spent — and the marginalization prior carrying the information of everything already dropped from the window. The inertial term is what fixes metric scale and the gravity direction; without it the visual half alone is the $Sim(3)$-ambiguous problem described just below.
+$$\mathbf{X}^{(k+1)} = \mathbf{X}^{(k)} \oplus \delta \quad\text{i.e.}\quad \texttt{Values::retract(delta)}$$
 
-**Gauge freedom.** Vision-only monocular is invariant under $Sim(3)$ — 7 unobservable DoF. Adding an IMU fixes scale and the gravity direction (roll and pitch), leaving **4 unobservable DoF: global position (3) and yaw (1).** Fix the gauge with a prior factor on the first keyframe, or accept a rank-deficient Hessian and use a pseudo-inverse. Practically, an unfixed gauge shows up as a Hessian with 4 near-zero eigenvalues and an LM solver that behaves oddly at small $\lambda$.
+Levenberg-Marquardt: $(\boldsymbol{\Lambda} + \lambda\,\mathrm{diag}(\boldsymbol{\Lambda}))\,\delta = \mathbf{A}^\top\mathbf{b}$. Dogleg trades region-trust for step-size control and is often more robust on SLAM problems.
 
-## 3.3 ORB-SLAM3 — architecture
+## 3.3 Sparsity, elimination, and the Bayes tree
 
-Three concurrent threads plus the Atlas.
+$\boldsymbol{\Lambda}$ is sparse because each factor touches few variables. Solving = **variable elimination**, which converts the factor graph into a Bayes net (a chordal graph), and grouping its cliques gives the **Bayes tree**.
 
-```
-                        ┌──────────────────────────────────────┐
-   stereo/mono/RGB-D    │              ATLAS                    │
-   + IMU                │  active map │ non-active maps 1..N    │
-        │               │  KFs, MapPoints, covisibility graph,  │
-        │               │  spanning tree, DBoW2 database        │
-        │               └───────▲──────────▲──────────▲─────────┘
-        ▼                       │          │          │
- ┌─────────────────┐            │          │          │
- │   TRACKING      │            │          │          │
- │ ─────────────── │            │          │          │
- │ ORB extraction  │            │          │          │
- │ (8-level pyramid│            │          │          │
- │  FAST + rBRIEF) │            │          │          │
- │       ↓         │            │          │          │
- │ pose prediction │            │          │          │
- │  (motion model  │            │          │          │
- │   or IMU preint)│            │          │          │
- │       ↓         │            │          │          │
- │ track ref-KF /  │────────────┘          │          │
- │ track local map │  queries               │          │
- │       ↓         │                        │          │
- │ relocalization  │                        │          │
- │ if lost         │                        │          │
- │       ↓         │                        │          │
- │ KF decision     │──── new KF ────┐       │          │
- └─────────────────┘                │       │          │
-                                    ▼       │          │
-                        ┌────────────────────┐         │
-                        │  LOCAL MAPPING     │─────────┘
-                        │ ────────────────── │
-                        │ KF insertion       │
-                        │ recent MP culling  │
-                        │ new MP triangulate │
-                        │ LOCAL BA (+IMU)    │
-                        │ KF culling         │
-                        │ IMU init / refine  │
-                        └─────────┬──────────┘
-                                  │
-                                  ▼
-                     ┌──────────────────────────┐
-                     │ LOOP & MAP MERGING       │
-                     │ ──────────────────────── │
-                     │ DBoW2 place recognition  │
-                     │ local-window geometric   │
-                     │   verification (3D)      │
-                     │ Sim(3)/SE(3) alignment   │
-                     │ loop fusion              │
-                     │ essential graph opt.     │
-                     │ ─── spawn ───► FULL BA   │
-                     │ OR map merge if match is │
-                     │    in a non-active map   │
-                     └──────────────────────────┘
-```
+Elimination order determines **fill-in** — how many zeros become non-zeros during factorization. This is a graph-theoretic problem (minimum fill-in is NP-hard), solved heuristically with **COLAMD** or **METIS** nested dissection. On a pose graph the difference between a good and a bad ordering is easily an order of magnitude in solve time.
 
-**The four things that make ORB-SLAM3 what it is:**
+**Marginalization** of a variable $\mathbf{x}_m$ is the Schur complement:
 
-1. **MAP-based inertial initialization**, in three stages: (a) vision-only MAP to get an up-to-scale map, (b) **inertial-only MAP** which jointly estimates scale, gravity direction, velocities and biases treating the visual trajectory as fixed, (c) joint visual-inertial MAP refinement. Converges in ~2 s versus tens of seconds for the classical closed-form-plus-refinement approaches. The insight is that scale and gravity should be *estimated with their uncertainty*, not solved in closed form and then hoped about.
+$$\begin{bmatrix}\boldsymbol{\Lambda}_{mm} & \boldsymbol{\Lambda}_{mr}\\ \boldsymbol{\Lambda}_{rm} & \boldsymbol{\Lambda}_{rr}\end{bmatrix} \;\longrightarrow\; \boldsymbol{\Lambda}_{rr} - \boldsymbol{\Lambda}_{rm}\boldsymbol{\Lambda}_{mm}^{-1}\boldsymbol{\Lambda}_{mr}$$
 
-2. **Atlas / multi-map.** When tracking is lost, rather than trying to relocalize forever in the current map, start a new active map and keep the old one. Place recognition runs against *all* maps; a match in a non-active map triggers **map merging** rather than a loop closure. This makes the system robust to kidnapping and to genuinely disconnected sessions.
+The result is **dense over the Markov blanket** of the marginalized variable. This is the fundamental cost of fixed-lag smoothing and the reason you marginalize *keyframes*, not every frame: each marginalization permanently densifies the graph. It is also why marginalizing a landmark seen by 50 keyframes creates a 50-clique and is usually a mistake.
 
-3. **Improved place recognition with local-window verification.** Classical DBoW2 requires temporal consistency across several consecutive frames before accepting a candidate, which costs recall and delays closure. ORB-SLAM3 instead checks a candidate immediately against a *local window* of its covisible keyframes and their map points, requiring geometric consistency in 3D. Higher recall, faster closure — and recall matters more than precision here only because the geometric check is strong enough to keep precision high.
+## 3.4 iSAM2
 
-4. **Covisibility graph + essential graph.** Local BA optimizes only the covisible set (bounded cost, independent of map size). Loop closure runs pose-graph optimization over the sparser essential graph (strong covisibility edges + spanning tree + loop edges) rather than full BA, then spawns full BA in a separate thread so tracking never blocks.
+Three ideas, all about doing incremental work only:
 
-**Tracking pseudocode:**
+1. **Incremental factorization.** New factors touch few variables. Identify the affected Bayes-tree cliques, detach that subtree into a factor graph, re-eliminate it with a locally improved ordering, reattach. Untouched parts of the tree are never revisited.
+2. **Fluid relinearization.** Relinearize a variable only when its accumulated linear delta exceeds `relinearizeThreshold`. Most variables far from the current pose never move enough to justify it.
+3. **Partial state update.** Back-substitute only where the delta is significant (`wildfireThreshold`), stopping propagation down branches whose change is negligible.
+
+Net effect: constant-time updates for exploration, and cost proportional to the *affected region* for loop closures — a large loop closure genuinely does cost a lot, and that is correct.
+
+## 3.5 Core GTSAM vocabulary
+
+| Concept | Class |
+|---|---|
+| Graph container | `NonlinearFactorGraph` |
+| Variable assignment | `Values` |
+| Poses | `Pose2`, `Pose3`, `Rot3`, `NavState` ($SE_2(3)$) |
+| IMU bias | `imuBias::ConstantBias` |
+| Preintegration | `PreintegratedImuMeasurements`, `PreintegratedCombinedMeasurements` |
+| IMU factors | `ImuFactor` (5 vars) , `CombinedImuFactor` (6 vars, bias evolution folded in) — built from [Chapter 2](chapter-2.md) |
+| Odometry / loop | `BetweenFactor<Pose3>` |
+| Anchoring | `PriorFactor<T>` |
+| GNSS | `GPSFactor`, `GPSFactorArm` |
+| Vision | `GenericProjectionFactor`, `SmartProjectionPoseFactor` |
+| Noise | `noiseModel::{Isotropic,Diagonal,Gaussian,Robust}` |
+| Robust kernels | `noiseModel::mEstimator::{Huber,Cauchy,GemanMcClure,Tukey}` |
+| Optimizers | `LevenbergMarquardtOptimizer`, `DoglegOptimizer`, `ISAM2` |
+| Fixed lag | `IncrementalFixedLagSmoother`, `BatchFixedLagSmoother` |
+| Keys | `Symbol('x', i)` → typed, human-readable indices |
+
+**Smart factors** deserve emphasis: `SmartProjectionPoseFactor` eliminates the landmark on the fly via Schur complement at every linearization, so the landmark never enters `Values` at all. You get the same information as full BA with a state containing only poses. The cost is that the landmark is re-triangulated each iteration, and degenerate configurations (pure rotation, tiny parallax) must be detected and the factor discarded — GTSAM exposes `SmartProjectionParams` with exactly those thresholds.
+
+## 3.6 Pseudocode — a LIO-SAM-shaped graph
+
+This is the canonical structure: IMU preintegration + odometry factors + GNSS + loop closures under iSAM2.
 
 ```
-track(frame, imu_measurements):
-    ORB_extract(frame)                       # 8-level pyramid, FAST, rBRIEF
+# --- setup ---
+params = ISAM2Params(relinearizeThreshold=0.1, relinearizeSkip=1)
+isam   = ISAM2(params)
+graph  = NonlinearFactorGraph()
+values = Values()
 
-    if IMU_initialized:
-        predicted_pose = preintegrate(last_state, imu_measurements)
-    else:
-        predicted_pose = constant_velocity_model(last_pose)
+X = lambda i: Symbol('x', i)   # Pose3
+V = lambda i: Symbol('v', i)   # Vector3 velocity
+B = lambda i: Symbol('b', i)   # imuBias::ConstantBias
 
-    ok = track_with_motion_model(predicted_pose)      # guided matching
-    if not ok:
-        ok = track_reference_keyframe()                # BoW matching
-    if not ok:
-        ok = relocalize()                              # DBoW2 + PnP RANSAC
-        if not ok:
-            if IMU_initialized and time_lost < THRESH:
-                continue_on_IMU_dead_reckoning()
-            else:
-                atlas.create_new_map()                 # ← Atlas
-                return
+# --- anchor the gauge (mandatory: 4-6 DoF are otherwise free) ---
+graph.add(PriorFactor_Pose3(X(0), prior_pose, prior_pose_noise))
+graph.add(PriorFactor_Vector3(V(0), prior_vel,  prior_vel_noise))
+graph.add(PriorFactor_Bias(B(0),    prior_bias, prior_bias_noise))
+values.insert(X(0), prior_pose); values.insert(V(0), prior_vel)
+values.insert(B(0), prior_bias)
 
-    track_local_map()          # project local MapPoints, match, pose-only BA
-    if need_new_keyframe():    # tracked-points ratio, elapsed time,
-        create_keyframe()      # IMU-driven frequency when uninitialized
+pim = PreintegratedCombinedMeasurements(imu_params, prior_bias)
+i = 0
+
+# --- main loop ---
+while running:
+    for (w, a, dt) in imu_since_last_keyframe():
+        pim.integrateMeasurement(a, w, dt)
+
+    if not keyframe_triggered():   continue
+    i += 1
+
+    # 1. IMU factor
+    graph.add(CombinedImuFactor(X(i-1), V(i-1), X(i), V(i), B(i-1), B(i), pim))
+
+    # 2. exteroceptive odometry (scan matching / VO) as a between factor
+    graph.add(BetweenFactor_Pose3(X(i-1), X(i), T_rel, odom_noise))
+
+    # 3. absolute measurements when available
+    if gnss.valid():
+        graph.add(GPSFactor(X(i), gnss.enu, gnss.noise))
+
+    # 4. loop closures  ── robust kernel is NOT optional here
+    for (j, T_loop, fitness) in detect_loop_candidates(i):
+        if fitness < FITNESS_TH:                       # geometric verification
+            n = noiseModel_Robust(
+                    mEstimator_Cauchy(0.1),
+                    noiseModel_Diagonal_Variances(loop_var))
+            graph.add(BetweenFactor_Pose3(X(j), X(i), T_loop, n))
+
+    # 5. initial guess from IMU propagation (NOT identity)
+    pred = pim.predict(NavState(values.at(X(i-1)), values.at(V(i-1))),
+                       values.at(B(i-1)))
+    values.insert(X(i), pred.pose()); values.insert(V(i), pred.velocity())
+    values.insert(B(i), values.at(B(i-1)))
+
+    # 6. incremental solve
+    isam.update(graph, values)
+    isam.update()                      # extra iterations after loop closure
+    result = isam.calculateEstimate()
+
+    # 7. reset for next interval
+    graph.resize(0); values.clear()
+    pim.resetIntegrationAndSetBias(result.at(B(i)))    # ← critical
+
+    publish(result.at(X(i)))
 ```
 
-## 3.4 cuVSLAM
+Four failure modes this pseudocode is written to avoid:
 
-NVIDIA's GPU stereo-visual-inertial system, the engine under `isaac_ros_visual_slam`, and directly relevant if the target stack is Isaac ROS + Nav2 + nvblox on Jetson.
+- **No prior → rank-deficient system.** The graph has a free gauge; the optimizer will wander or fail.
+- **Identity initial guess.** Gauss-Newton is local. Feeding it IMU-propagated initial values instead of identity is often the difference between converging and not.
+- **Forgetting `resetIntegrationAndSetBias`.** The preintegration must be reset to the *newly optimized* bias, otherwise the next interval integrates against a stale linearization point and the bias estimate oscillates.
+- **Loop closures with a Gaussian noise model.** One false positive with a tight Gaussian will fold the map. Cauchy or Geman-McClure, plus an independent geometric fitness gate, plus ideally **GNC** — graduated non-convexity anneals a convex surrogate toward the true robust cost, so you don't need a good initial guess for the robust problem to work.
 
-Architecture, per the cuVSLAM paper: two major blocks, **frontend** and **backend**. The frontend handles real-time low-latency pose estimation and local mapping, prioritizing trajectory smoothness, and maintains a local odometry map of recent keyframe poses, visible 3D landmarks and their observations. It splits into a **2D module** — keypoint selection, feature tracking, keyframe selection — and a **3D module**. Keypoint selection divides the image into patches and takes Shi-Tomasi "Good Features to Track" per patch, enforcing approximately uniform spatial distribution with a total count above a threshold. The **backend** runs asynchronously and handles global map consistency via pose-graph optimization and loop closure, over a global map of camera poses, 2D observations, 3D landmarks, pose deltas and visual features.
-
-Isaac ROS documents that all SLAM-related operations run in a separate thread in parallel with visual odometry, that images are copied to GPU before tracking begins, and that landmarks and the pose graph are stored in a structure that does not grow when the same landmark is revisited.
+## 3.7 Factor graph, drawn
 
 ```
- stereo pair(s)          IMU (optional)
-   (1..4 rigs)                │
-        │                     │
-        ▼                     ▼
- ┌────────────────────────────────────────┐
- │  GPU upload  →  FRONTEND               │   ~low-latency path
- │  ┌──────────────────────────────────┐  │
- │  │ 2D module                        │  │
- │  │  patch-uniform Shi-Tomasi        │  │
- │  │  keypoint selection              │  │
- │  │  feature tracking                │  │
- │  │  keyframe selection              │  │
- │  ├──────────────────────────────────┤  │
- │  │ 3D module                        │  │
- │  │  stereo triangulation            │  │
- │  │  local odometry map              │  │
- │  │  (recent KF poses + landmarks)   │  │
- │  │  local optimization + IMU        │  │
- │  └──────────────────────────────────┘  │
- └─────────────┬──────────────────────────┘
-               │ smooth odometry, high rate ──► odom → base_link, Nav2
-               │
-               ▼ (async, separate thread)
- ┌────────────────────────────────────────┐
- │  BACKEND                               │
- │   global map: poses, 2D observations,  │
- │   3D landmarks, pose deltas, features  │
- │   loop closure detection               │
- │   pose graph optimization              │
- └─────────────┬──────────────────────────┘
-               │ corrected global pose ──► map → odom
-               ▼
-        SaveMap / LoadMap  (localization-only mode)
+   [prior]
+      │
+      ▼
+    (x₀)══[IMU]══(x₁)══[IMU]══(x₂)══[IMU]══(x₃)
+     ║ ╲          ║ ╲          ║            ║
+   (v₀) ╲       (v₁) ╲       (v₂)         (v₃)
+     ║    ╲       ║    ╲       ║            ║
+   (b₀)──[bias RW]──(b₁)──[bias RW]──(b₂)──(b₃)
+            ╲        │        ╱  ╲          │
+             ╲    [proj]     ╱    [proj]  [GPS]
+              ╲     │       ╱       │
+               ╲──►(X_j)◄──╱      (X_k)
+                  landmark        landmark
+
+           ╔══════════════════════════════════╗
+           ║ (x₃)══════[loop, robust]══════(x₀)║
+           ╚══════════════════════════════════╝
+
+  ( ) variable node      [ ] factor node      ══ constraint
 ```
 
-**Reported performance:** average trajectory error below 1% on KITTI odometry and mean position error under 5 cm on EuRoC, running in real time on Jetson. Deployed processing 8 Full-HD distorted RGB images at 30 FPS from 4 stereo cameras on a Jetson Orin AGX within the Isaac Perceptor framework. Multi-camera mode gives two documented benefits: trajectory reliability in feature-poor environments, and higher loop-closure detection rates. A demonstrated robustness test covered cameras randomly with opaque film for 20–60 s intervals with at least one stereo pair uncovered, and tracking survived.
-
-**Practical guidance from the NVIDIA docs that matters for a real rig:** synchronization significantly affects performance and should ideally be hardware-based with verified relative timestamps across cameras; VGA or higher resolution is recommended; 30 FPS suits typical human-speed motion; and image quality — lenses, exposure, white balance — matters because clipped regions destroy features.
-
-That last cluster is your hardware-integration territory. The XVS master/slave sync on global-shutter sensors and FC-triggered capture is exactly what "ideally through hardware synchronization" means, and being able to say *why* — that a 10 ms inter-camera skew at 1 m/s injects a 1 cm baseline error that the triangulation attributes to depth — is a much stronger statement than "I set up the cameras."
-
-## 3.5 Contrast: MSCKF, the filter-based alternative
-
-Worth knowing because OpenVINS and many commercial VIOs use it, and because the null-space trick is elegant.
-
-State = IMU state + a **sliding window of past camera poses**. Landmarks are *not* in the state. For a feature observed in $M$ poses, stack the residuals:
-
-$$\mathbf{r} = \mathbf{H}_x\,\delta\mathbf{x} + \mathbf{H}_f\,\delta\mathbf{X}_f + \mathbf{n}$$
-
-Let $\mathbf{N}$ be a basis for the **left null space** of $\mathbf{H}_f$ (i.e. $\mathbf{N}^\top\mathbf{H}_f = \mathbf{0}$). Project:
-
-$$\mathbf{N}^\top\mathbf{r} = \mathbf{N}^\top\mathbf{H}_x\,\delta\mathbf{x} + \mathbf{N}^\top\mathbf{n}$$
-
-The landmark is gone. You get a landmark-free EKF update whose cost is linear in window size rather than quadratic in landmark count. The price is that the landmark is marginalized *by projection*, so its information is used once and discarded — no map is built, hence no loop closure.
-
-**Consistency.** Naive MSCKF gains spurious information along the 4 unobservable directions, because the same state is linearized at different points across timesteps, artificially raising the rank of the observability matrix. Fixes: **FEJ** (fix each state's linearization point at its first estimate) or **OC-EKF** (project Jacobians onto the correct nullspace). The consequence of not fixing it is an overconfident covariance — which is worse than an inaccurate one, because everything downstream trusts it.
-
-## 3.6 Comparison
-
-| | ORB-SLAM3 | cuVSLAM | VINS-Fusion | OpenVINS |
-|---|---|---|---|---|
-| Backend | Local BA + pose graph + full BA | Local opt + pose graph (async) | Fixed-lag smoother (Ceres) | MSCKF filter |
-| Features | ORB (binary) | Shi-Tomasi + tracking, GPU | Shi-Tomasi + KLT | KLT / descriptor |
-| Landmarks in state | Yes (map) | Yes (map) | Yes (window) | No (null-space) |
-| Loop closure | DBoW2 + local-window 3D verification | Yes, pose graph | DBoW2 | Not core |
-| Multi-map | Yes (Atlas) | Map save/load | No | No |
-| Hardware | CPU, multi-thread | **GPU / Jetson** | CPU | CPU |
-| Licence | GPLv3 | NVIDIA (partly open) | GPLv3 | GPLv3 |
-
-The GPLv3 column is not a footnote — it is often the actual decision driver in a commercial robot, and mentioning it signals you've shipped something rather than only benchmarked.
+Read the structure: poses form a chain (IMU + odometry), landmarks create the fill-in that makes BA expensive, biases form their own random-walk chain, GPS and priors are unary, and the loop closure is the single edge that turns an open chain into a cycle — which is exactly why it both fixes drift and is dangerous when wrong.

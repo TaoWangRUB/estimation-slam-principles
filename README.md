@@ -9,20 +9,20 @@ the implementation-level detail.
 
 ## Contents
 
-Ordered so nothing is used before it is introduced, and so each chapter hands a
-concrete object to the next: preintegration builds a factor, the factor graph
-consumes it, VIO is that graph over a sliding window, SLAM adds loop closure and
-mapping, and the autopilot's EKF fuses the resulting odometry.
+**Chapter 1 is the map** — it defines the components, their interfaces, and the
+type carried on every wire. Every later chapter decomposes exactly one box and
+declares at the top which interface it implements.
 
 - **Ch. 0 — Lie Group Primer** — SO(3)/SE(3)/SE₂(3), perturbation conventions, uncertainty on manifolds
-- **Ch. 1 — IMU Preintegration** — sensor model, kinematics, noise propagation, bias correction, residuals
-- **Ch. 2 — GTSAM & Factor Graphs** — formulation, iSAM2, smart factors, a LIO-SAM-shaped graph
-- **Ch. 3 — Visual-Inertial Odometry** — ORB-SLAM3, cuVSLAM, MSCKF
-- **Ch. 4 — SLAM as a Whole** — taxonomy, the modern pipeline, data association, maps, evaluation
-- **Ch. 5 — EKF / INS** — PX4 EKF2 and ArduPilot EKF3: error-state, delayed fusion horizon, arbitration, and where VIO odometry enters
+- **Ch. 1 — System Architecture** — components, data contracts, rate domains, TF ownership, top-level pseudocode
+- **Ch. 2 — IMU Preintegration** — sensor model, kinematics, noise propagation, bias correction, residuals
+- **Ch. 3 — GTSAM & Factor Graphs** — formulation, iSAM2, smart factors, a LIO-SAM-shaped graph
+- **Ch. 4 — Visual-Inertial Odometry** — ORB-SLAM3, cuVSLAM, MSCKF
+- **Ch. 5 — SLAM as a Whole** — taxonomy, the modern pipeline, data association, maps, evaluation
+- **Ch. 6 — EKF / INS** — PX4 EKF2 and ArduPilot EKF3: error-state, delayed fusion horizon, arbitration, and where VIO odometry enters
 - **References** — sources per chapter, plus cross-check notes
 
-Chapter 1 has been verified equation-by-equation against
+Chapter 2 has been verified equation-by-equation against
 [Qiu Xiaochen's 《预积分总结与公式推导》](https://github.com/PetWorm/IMU-Preintegration-Propogation-Doc),
 a 25-page line-by-line derivation of Forster's on-manifold preintegration.
 

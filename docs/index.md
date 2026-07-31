@@ -5,58 +5,41 @@ A working reference: equations, pseudocode, architecture. Written for someone wh
 **Contents**
 
 - [Chapter 0 — Lie Group Primer](chapter-0.md)
-- [Chapter 1 — IMU Preintegration](chapter-1.md)
-- [Chapter 2 — GTSAM and Factor Graphs](chapter-2.md)
-- [Chapter 3 — Visual-Inertial Odometry: ORB-SLAM3 and cuVSLAM](chapter-3.md)
-- [Chapter 4 — SLAM as a Whole](chapter-4.md)
-- [Chapter 5 — EKF/INS: PX4 EKF2 and ArduPilot EKF3](chapter-5.md)
+- [Chapter 1 — System Architecture: components, interfaces, data flow](chapter-1.md)
+- [Chapter 2 — IMU Preintegration](chapter-2.md)
+- [Chapter 3 — GTSAM and Factor Graphs](chapter-3.md)
+- [Chapter 4 — Visual-Inertial Odometry: ORB-SLAM3 and cuVSLAM](chapter-4.md)
+- [Chapter 5 — SLAM as a Whole](chapter-5.md)
+- [Chapter 6 — EKF/INS: PX4 EKF2 and ArduPilot EKF3](chapter-6.md)
 - [References](references.md)
 
-## How the chapters chain
+## How to read this
 
-The chapters are ordered so that nothing is used before it is introduced. Each one hands a concrete object to the next:
+**[Chapter 1](chapter-1.md) is the map.** It defines the components, the interfaces between them, and the type carried on every wire. Every chapter after it decomposes exactly one box, and declares at the top which interface it implements. If a chapter ever seems to appear from nowhere, go back to §1.1 and find its box.
 
-```
-  raw IMU            ┌────────────────────────────────────────────────┐
-  200-1000 Hz ──────►│ Ch.1   IMU PREINTEGRATION                      │
-                     │   N samples ──► ΔR, Δv, Δp, Σ, ∂Δ/∂b           │
-                     └──────────────────────┬─────────────────────────┘
-                                            │  ONE IMU factor per keyframe
-                                            ▼
-                     ┌────────────────────────────────────────────────┐
-                     │ Ch.2   FACTOR GRAPH   (GTSAM, iSAM2)           │
-                     │   the machinery that consumes factors:         │
-                     │   variables, elimination, marginalization      │
-                     └──────────────────────┬─────────────────────────┘
-                                            │  + reprojection factors
-  camera / lidar ───────────────────────────┤
-                                            ▼
-                     ┌────────────────────────────────────────────────┐
-                     │ Ch.3   VISUAL-INERTIAL ODOMETRY                │
-                     │   that graph over a sliding window             │
-                     │   ORB-SLAM3 · cuVSLAM · VINS · MSCKF           │
-                     └──────────────────────┬─────────────────────────┘
-                                            │  odometry — smooth, drifts
-                                            ▼
-                     ┌────────────────────────────────────────────────┐
-                     │ Ch.4   SLAM AS A WHOLE                         │
-                     │   + place recognition, loop closure, mapping   │
-                     └──────────────────────┬─────────────────────────┘
-                                            │  pose / odom, map→odom
-                                            ▼
-                     ┌────────────────────────────────────────────────┐
-                     │ Ch.5   EKF / INS  on the flight controller     │
-                     │   PX4 EKF2 · ArduPilot EKF3 — fuses that       │
-                     │   odometry with GPS, baro, mag → controller    │
-                     └────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+  C0["<b>Ch.0</b><br/>Lie groups"]
+  C1["<b>Ch.1</b><br/>Architecture<br/><i>the contract</i>"]
+  C2["<b>Ch.2</b><br/>IMU<br/>preintegration"]
+  C3["<b>Ch.3</b><br/>Factor graphs<br/>GTSAM"]
+  C4["<b>Ch.4</b><br/>VIO"]
+  C5["<b>Ch.5</b><br/>SLAM"]
+  C6["<b>Ch.6</b><br/>Autopilot EKF"]
 
-  Ch.0 (Lie groups) underpins every box above — it is where the Jacobians
-  and the perturbation conventions that all of them share are defined.
+  C1 --> C2 -->|PreintegratedImu| C3 -->|NavState| C4 -->|Keyframe| C5
+  C5 -->|Odometry| C6
+  C0 -.->|"Jacobians,<br/>conventions"| C2
+  C0 -.-> C3
+  C0 -.-> C4
+
+  style C1 fill:#31456b,stroke:#8ab4f8,color:#fff
+  style C6 fill:#6b3145,stroke:#f8a1b4,color:#fff
 ```
 
-Two directions are worth naming explicitly, because they are what tie the optimization half of this document to the filtering half:
+Two threads tie the halves of this document together:
 
-- **Downward** — an IMU factor built in Chapter 1 is consumed as `ImuFactor` in Chapter 2, appears as the inertial term of the VI bundle-adjustment objective in Chapter 3, and is one edge of the pose chain in Chapter 4.
-- **Across** — Chapters 1–4 build an *optimization-based* estimator. Chapter 5 is the *filtering* one that runs on the autopilot, and in a real vehicle the two are chained: VIO/SLAM publishes odometry, and EKF2/EKF3 ingests it as an external-vision aiding source alongside GPS, baro and magnetometer. Same IMU, fused twice, for different reasons — which is exactly the architecture that Chapter 5 §5.9 argues about.
+- **Downward** — an IMU factor built in Chapter 2 is consumed as `ImuFactor` in Chapter 3, appears as the inertial term of the VI bundle-adjustment objective in Chapter 4, and is one edge of the pose chain in Chapter 5.
+- **Across** — Chapters 2–5 build an *optimization-based* estimator. Chapter 6 is the *filtering* one on the autopilot, and in a real vehicle the two are chained: VIO/SLAM publishes odometry, and EKF2/EKF3 ingests it as an external-vision aiding source alongside GPS, baro and magnetometer. Same IMU, fused twice, for different reasons — see §1.1 and §6.9.
 
 **Notation.** $(\cdot)_W$ world/navigation frame (ENU or NED — stated per chapter), $(\cdot)_B$ body/IMU frame, $(\cdot)_C$ camera frame. $\mathbf{R}_{WB} \in SO(3)$ rotates body vectors into world. $\lfloor \mathbf{v} \rfloor_\times$ is the skew-symmetric matrix. $\tilde{(\cdot)}$ denotes a measurement, $\hat{(\cdot)}$ an estimate, $\bar{(\cdot)}$ a noise-free quantity or one evaluated at the linearization point, and $\delta(\cdot)$ an error.

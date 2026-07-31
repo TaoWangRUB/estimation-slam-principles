@@ -1,416 +1,268 @@
-# Chapter 1 — IMU Preintegration
+# Chapter 1 — System Architecture: components, interfaces, data flow
 
-!!! note "Sources"
-    The formulation here is Forster et al. (2015/2017), which is what GTSAM implements. The equations in this chapter have been cross-checked line-by-line against [Qiu Xiaochen's 《预积分总结与公式推导》](https://github.com/PetWorm/IMU-Preintegration-Propogation-Doc), a 25-page derivation that works through every algebraic step the papers compress. See [References → cross-check notes](references.md#cross-check-notes) for what that check confirmed and what it corrected.
+Every chapter after this one zooms into a single box. This chapter fixes what the boxes are, what runs between them, and — the part usually left implicit — **the type of the thing on each wire**. Read the rest as decomposition: when Chapter 2 derives $\Delta\tilde{\mathbf{R}}_{ij}$, it is populating one field of one message defined here.
 
-## 1.1 Sensor model
+The organising claim is simple. A SLAM system is four rate domains connected by queues, and almost every architectural mistake is either putting a component in the wrong rate domain or letting a slow domain block a fast one.
 
-World frame here is any inertial frame with gravity $\mathbf{g}$ (a vector, e.g. $[0,0,-9.81]^\top$ in ENU). This rests on a **static world assumption** that is worth stating out loud, because it is what separates this from classical strapdown INS: the Earth's rotation is neglected, $\mathbf{g}$ is taken constant in both magnitude and direction, and the world frame — normally the local-level frame at initialization — is treated as inertial. For MEMS-grade sensors over SLAM-scale distances and durations this is sound, since a MEMS gyro cannot observe Earth rate anyway. On a navigation-grade IMU, or over hundreds of kilometres, it is not, and you need the Coriolis and gravity-model terms that PX4 and ArduPilot carry in Chapter 5.
+## 1.1 The system on one page
 
-The IMU measures **specific force** — not acceleration — and angular rate in the body frame:
+```mermaid
+flowchart TB
+  subgraph S["Sensors"]
+    direction LR
+    IMU["IMU<br/>200–1000 Hz"]
+    CAM["Camera / LiDAR<br/>10–60 Hz"]
+    ABS["GNSS · baro · mag<br/>1–10 Hz"]
+  end
 
-$$\tilde{\boldsymbol{\omega}}_t = \boldsymbol{\omega}_t + \mathbf{b}^g_t + \boldsymbol{\eta}^g_t\tag{1.1}$$
+  IMU -->|ImuSample| PRE["<b>Preintegrator</b><br/>Ch.2"]
+  IMU -->|ImuSample| OUTP["<b>Output predictor</b><br/>Ch.2 §2.9"]
+  CAM -->|Frame| FE["<b>Frontend</b><br/>extract · track · triangulate<br/>Ch.4"]
 
-$$\tilde{\mathbf{a}}_t = \mathbf{R}_t^\top(\mathbf{a}_t - \mathbf{g}) + \mathbf{b}^a_t + \boldsymbol{\eta}^a_t\tag{1.2}$$
+  PRE -->|PreintegratedImu| KF{"<b>Keyframe?</b><br/>motion · time · overlap"}
+  FE -->|"Feature[] · Landmark[]"| KF
 
-with biases modelled as Brownian motion (random walk):
+  KF -->|"Keyframe + Factor[]"| BE["<b>Backend</b><br/>factor graph · iSAM2<br/>Ch.3"]
+  ABS -->|"GnssFix · Baro"| BE
 
-$$\dot{\mathbf{b}}^g = \boldsymbol{\eta}^{bg}, \qquad \dot{\mathbf{b}}^a = \boldsymbol{\eta}^{ba}\tag{1.3}$$
+  KF -->|Keyframe| PR["<b>Place recognition</b><br/>DBoW2 · ScanContext<br/>Ch.5 §5.3"]
+  PR -->|LoopCandidate| GV{"<b>Geometric<br/>verification</b>"}
+  GV -->|reject| PR
+  GV -->|"LoopFactor (robust)"| BE
 
-Four noise parameters, all from **Allan variance**, not from the datasheet:
+  BE -->|NavState| OUTP
+  BE -->|NavState| FE
+  BE -->|"Keyframe + NavState"| MAP["<b>Map maintenance</b><br/>grid · TSDF · ESDF<br/>Ch.5 §5.5"]
 
-| Parameter | Symbol | Units |
-|---|---|---|
-| Gyro noise density | $\sigma_g$ | rad/s/$\sqrt{\text{Hz}}$ |
-| Accel noise density | $\sigma_a$ | m/s²/$\sqrt{\text{Hz}}$ |
-| Gyro bias random walk | $\sigma_{bg}$ | rad/s²/$\sqrt{\text{Hz}}$ |
-| Accel bias random walk | $\sigma_{ba}$ | m/s³/$\sqrt{\text{Hz}}$ |
+  OUTP -->|"Odometry @ IMU rate"| CTRL["Controller / planner"]
+  OUTP -->|"Odometry (ext. vision)"| EKF["<b>Autopilot EKF</b><br/>PX4 EKF2 · ArduPilot EKF3<br/>Ch.6"]
+  ABS --> EKF
+  IMU --> EKF
+  MAP --> CTRL
 
-**Where these numbers come from.** Log a stationary IMU for several hours, compute the Allan deviation over averaging time $\tau$, and read the parameters off the slopes of a log-log plot:
-
-$$\sigma_A^2(\tau) = \underbrace{\frac{N^2}{\tau}}_{\text{white noise}} + \underbrace{\frac{2\ln 2}{\pi}B^2}_{\text{bias instability}} + \underbrace{\frac{K^2\tau}{3}}_{\text{bias random walk}}\tag{1.4}$$
-
-```
- σ_A(τ)
- [log]
-   │
-   │╲                                                          ╱
-   │ ╲                                                        ╱
-   │  ╲   slope −1/2                          slope +1/2     ╱
-   │   ╲  WHITE NOISE                     BIAS RANDOM WALK  ╱
-   │    ╲ N = σ_g , σ_a                    K = σ_bg , σ_ba ╱
-   │     ╲                                                ╱
-   │      ╲                                              ╱
-   │       ╲                                            ╱
-   │        ╲__                                      __╱
-   │           ╲___                              ___╱
-   │               ╲_____   slope 0        ____╱
-   │                     ╲_______________╱
-   │                        ▲ min = 0.664·B
-   │                          BIAS INSTABILITY (flicker floor)
-   │                          — NOT modelled by the ESKF —
-   └────┬───────┬───────┬───────┬───────┬───────┬───────┬────► τ [log]
-      0.01s   0.1s     1s      3s      10s    100s   1000s
-                        ▲       ▲
-                        │       └── read K here:  σ_A(3 s) = K
-                        └────────── read N here:  σ_A(1 s) = N
+  style PRE fill:#31456b,stroke:#8ab4f8,color:#fff
+  style BE fill:#31456b,stroke:#8ab4f8,color:#fff
+  style FE fill:#31456b,stroke:#8ab4f8,color:#fff
+  style EKF fill:#6b3145,stroke:#f8a1b4,color:#fff
 ```
 
-How to read it physically: at **short $\tau$** you are averaging a handful of samples, so white noise dominates and averaging longer helps — the curve falls. At **long $\tau$** the bias has had time to wander, so averaging longer *hurts* — the curve rises. The minimum between them is the bias instability, the flicker floor, which a random-walk bias model does **not** represent. That mismatch is why $\sigma_{bg}$ read straight off the plot is usually optimistic in practice and often needs inflating by 2–10× in a real filter.
+Note the two extra arrows into the autopilot EKF: it receives the **same IMU stream** the preintegrator consumed, *and* the odometry derived from it. That double path is not a mistake in the drawing — it is a real, widely-shipped architecture, and §6.9 is about what it costs you.
 
-Discrete-time covariances scale as $\sigma^2/\Delta t$ for white noise and $\sigma^2 \Delta t$ for random walk:
+## 1.2 The types on the wires
 
-```
-  continuous density          discrete variance @ Δt         as Δt ↓ (faster IMU)
-  ──────────────────          ──────────────────────         ────────────────────
-  white noise   σ_g   ──────►      σ_g²  /  Δt          ──►   variance grows  ▲
-                                                              (each sample averages
-                                                               less noise away)
+This is the contract. Every later chapter produces or consumes one of these; nothing else crosses a component boundary.
 
-  random walk   σ_bg  ──────►      σ_bg² ·  Δt          ──►   variance shrinks ▼
-                                                              (less time to drift)
-```
-
-Getting this inversion backwards is a classic bug — and its symptom is a filter that is beautifully tuned at one IMU rate and diverges at another.
-
-## 1.2 Deriving the kinematics over the interval [i, j]
-
-Four steps: invert the sensor model, write the continuous-time ODEs, discretize, chain.
-
-**Step 1 — invert the sensor model.** The IMU equations of §1.1 are written measurement-side. Solve each for the true quantity:
-
-$$\boldsymbol{\omega}_t = \tilde{\boldsymbol{\omega}}_t - \mathbf{b}^g_t - \boldsymbol{\eta}^g_t\tag{1.5}$$
-
-$$\tilde{\mathbf{a}}_t = \mathbf{R}_t^\top(\mathbf{a}_t - \mathbf{g}) + \mathbf{b}^a_t + \boldsymbol{\eta}^a_t \;\;\Longrightarrow\;\; \mathbf{a}_t = \mathbf{g} + \mathbf{R}_t(\tilde{\mathbf{a}}_t - \mathbf{b}^a_t - \boldsymbol{\eta}^a_t)\tag{1.6}$$
-
-Read the second one physically: the accelerometer hands you a body-frame vector, $\mathbf{R}_t$ rotates it into the world, and adding $\mathbf{g}$ back undoes the $-\mathbf{g}$ the sensor applied. Gravity leaves the rotation and reappears as a standalone world-frame term — which is why $\mathbf{g}$ shows up unrotated in every equation from here on.
-
-**Step 2 — continuous-time rigid-body kinematics.**
-
-$$\dot{\mathbf{R}}_t = \mathbf{R}_t\lfloor\boldsymbol{\omega}_t\rfloor_\times, \qquad \dot{\mathbf{v}}_t = \mathbf{a}_t, \qquad \dot{\mathbf{p}}_t = \mathbf{v}_t\tag{1.7}$$
-
-The first is where the convention of §0.2 bites. $\boldsymbol{\omega}$ is **body-resolved**, so the increment applies on the **right**:
-
-$$\mathbf{R}_{t+dt} = \mathbf{R}_t\,\mathrm{Exp}(\boldsymbol{\omega}\,dt) \approx \mathbf{R}_t(\mathbf{I} + \lfloor\boldsymbol{\omega}\rfloor_\times dt) \;\Longrightarrow\; \frac{\mathbf{R}_{t+dt}-\mathbf{R}_t}{dt} = \mathbf{R}_t\lfloor\boldsymbol{\omega}\rfloor_\times\tag{1.8}$$
-
-Had $\boldsymbol{\omega}$ been world-resolved you would get $\lfloor\boldsymbol{\omega}_W\rfloor_\times\mathbf{R}_t$ — left multiplication. The skew form is not a choice: differentiating the orthogonality constraint $\mathbf{R}^\top\mathbf{R}=\mathbf{I}$ gives $\dot{\mathbf{R}}^\top\mathbf{R} + \mathbf{R}^\top\dot{\mathbf{R}} = \mathbf{0}$, so $\mathbf{R}^\top\dot{\mathbf{R}}$ **must** be skew-symmetric, and every 3×3 skew matrix is $\lfloor\mathbf{v}\rfloor_\times$ for exactly one vector. That vector is the angular velocity. This is the same statement as $\mathfrak{so}(3) \cong \mathbb{R}^3$, and it is why a rotation carries 3 DoF rather than 9.
-
-Substituting Step 1:
-
-$$\dot{\mathbf{R}}_t = \mathbf{R}_t\lfloor\tilde{\boldsymbol{\omega}}_t - \mathbf{b}^g_t - \boldsymbol{\eta}^g_t\rfloor_\times, \qquad \dot{\mathbf{v}}_t = \mathbf{g} + \mathbf{R}_t(\tilde{\mathbf{a}}_t - \mathbf{b}^a_t - \boldsymbol{\eta}^a_t), \qquad \dot{\mathbf{p}}_t = \mathbf{v}_t\tag{1.9}$$
-
-**Step 3 — discretize with zero-order hold.** Assume $\tilde{\boldsymbol{\omega}}$ and $\tilde{\mathbf{a}}$ constant over $[t,\,t+\Delta t]$.
-
-*Rotation.* With constant $\boldsymbol{\omega}$, the ODE $\dot{\mathbf{R}}=\mathbf{R}\lfloor\boldsymbol{\omega}\rfloor_\times$ has the **exact** solution
-
-$$\mathbf{R}_{t+\Delta t} = \mathbf{R}_t\,\mathrm{Exp}\big((\tilde{\boldsymbol{\omega}}_t - \mathbf{b}^g_t - \boldsymbol{\eta}^g_t)\Delta t\big)\tag{1.10}$$
-
-That is where $\mathrm{Exp}$ comes from — not an approximation, but the matrix exponential solving a linear ODE on the group. It ceases to be exact only when $\boldsymbol{\omega}$ *rotates* within the interval, which is precisely what coning correction addresses.
-
-*Velocity.* Integrate once, holding $\mathbf{R}_\tau \approx \mathbf{R}_t$:
-
-$$\mathbf{v}_{t+\Delta t} = \mathbf{v}_t + \int_t^{t+\Delta t}\!\!\big[\mathbf{g} + \mathbf{R}_\tau(\cdot)\big]\,d\tau \approx \mathbf{v}_t + \mathbf{g}\Delta t + \mathbf{R}_t(\tilde{\mathbf{a}}_t - \mathbf{b}^a_t - \boldsymbol{\eta}^a_t)\Delta t\tag{1.11}$$
-
-*Position.* Integrate twice; the double integral of a constant produces the $\tfrac{1}{2}(\cdot)\Delta t^2$ terms:
-
-$$\mathbf{p}_{t+\Delta t} = \mathbf{p}_t + \mathbf{v}_t\Delta t + \tfrac{1}{2}\mathbf{g}\Delta t^2 + \tfrac{1}{2}\mathbf{R}_t(\tilde{\mathbf{a}}_t - \mathbf{b}^a_t - \boldsymbol{\eta}^a_t)\Delta t^2\tag{1.12}$$
-
-The $\mathbf{R}_\tau\approx\mathbf{R}_t$ hold is the **only real approximation in the entire derivation**. Replacing it with $\tfrac{1}{2}(\mathbf{R}_t+\mathbf{R}_{t+\Delta t})$ is midpoint integration — same structure, better accuracy, free.
-
-**Step 4 — chain from $i$ to $j$.** Apply the one-step maps repeatedly. Rotations **telescope** into a product; velocities and positions **sum**, with the gravity terms collecting because $\mathbf{g}$ is constant ($\sum_k\mathbf{g}\Delta t = \mathbf{g}\Delta t_{ij}$):
-
-$$\mathbf{R}_j = \mathbf{R}_i \prod_{k=i}^{j-1}\mathrm{Exp}\big((\tilde{\boldsymbol{\omega}}_k - \mathbf{b}^g_k - \boldsymbol{\eta}^g_k)\Delta t\big)\tag{1.13}$$
-
-$$\mathbf{v}_j = \mathbf{v}_i + \mathbf{g}\Delta t_{ij} + \sum_{k}\mathbf{R}_k(\tilde{\mathbf{a}}_k - \mathbf{b}^a_k - \boldsymbol{\eta}^a_k)\Delta t\tag{1.14}$$
-
-$$\mathbf{p}_j = \mathbf{p}_i + \sum_k \left[\mathbf{v}_k\Delta t + \tfrac{1}{2}\mathbf{g}\Delta t^2 + \tfrac{1}{2}\mathbf{R}_k(\tilde{\mathbf{a}}_k - \mathbf{b}^a_k - \boldsymbol{\eta}^a_k)\Delta t^2\right]\tag{1.15}$$
-
-Worth checking that the position gravity term collapses correctly. Substituting $\mathbf{v}_k = \mathbf{v}_i + \mathbf{g}(k-i)\Delta t + \dots$ with $n = j-i$:
-
-$$\underbrace{\mathbf{g}\Delta t^2\frac{n(n-1)}{2}}_{\text{from } \sum_k \mathbf{v}_k\Delta t} + \underbrace{\mathbf{g}\Delta t^2\frac{n}{2}}_{\text{from } \sum_k \tfrac{1}{2}\mathbf{g}\Delta t^2} = \frac{\mathbf{g}\,n^2\Delta t^2}{2} = \tfrac{1}{2}\mathbf{g}\Delta t_{ij}^2 \;\;\checkmark\tag{1.16}$$
-
-which is exactly the $\tfrac{1}{2}\mathbf{g}\Delta t_{ij}^2$ appearing on the left-hand side of the $\Delta\mathbf{p}_{ij}$ definition in §1.4.
-
-**The telescoping is the whole point:**
-
-```
-              ┌──────────── ΔR_ij = R_iᵀ R_j ────────────┐
-              │                                          │
-   world ─── R_i ──[Exp]── R_i₊₁ ──[Exp]── R_i₊₂ ── … ── R_j
-              ▲                                          ▲
-              │                                          │
-      states being optimized —        the bracketed product is not:
-      they move every iteration       only IMU samples and the bias
-```
-
-**Assumptions made, in order of how much they matter:**
-
-1. $\mathbf{R}_\tau \approx \mathbf{R}_k$ within each interval — the only genuine approximation. Fixed by midpoint or RK4.
-2. $\tilde{\boldsymbol{\omega}}$ constant within each interval — exact for the rotation ODE, breaks under coning.
-3. $\mathbf{b}_k \approx \mathbf{b}$ constant over the whole of $[i,j]$ — this is what justifies pulling the bias out of the sum, and it is exactly why the first-order bias-correction Jacobians of §1.6 exist: they patch the error when the bias estimate later moves.
-
-## 1.3 The problem preintegration solves
-
-Look at where $\mathbf{R}_k$ sits in the sums above. **Every term depends on the state at $i$.** In an optimizer, whenever $\mathbf{R}_i$ changes — every iteration — you must re-integrate all $N$ IMU samples between keyframes. At 200 Hz IMU and 10 Hz keyframes that is 20 samples × every variable × every iteration. Unacceptable.
-
-## 1.4 Preintegrated measurements
-
-Move the $i$-frame quantities to the left-hand side. Define **relative** increments that depend only on the IMU samples and the bias:
-
-$$\boxed{\Delta\mathbf{R}_{ij} \triangleq \mathbf{R}_i^\top\mathbf{R}_j = \prod_{k=i}^{j-1}\mathrm{Exp}\big((\tilde{\boldsymbol{\omega}}_k - \mathbf{b}^g - \boldsymbol{\eta}^g_k)\Delta t\big)}\tag{1.17}$$
-
-$$\boxed{\Delta\mathbf{v}_{ij} \triangleq \mathbf{R}_i^\top(\mathbf{v}_j - \mathbf{v}_i - \mathbf{g}\Delta t_{ij}) = \sum_{k}\Delta\mathbf{R}_{ik}(\tilde{\mathbf{a}}_k - \mathbf{b}^a - \boldsymbol{\eta}^a_k)\Delta t}\tag{1.18}$$
-
-$$\boxed{\Delta\mathbf{p}_{ij} \triangleq \mathbf{R}_i^\top(\mathbf{p}_j - \mathbf{p}_i - \mathbf{v}_i\Delta t_{ij} - \tfrac{1}{2}\mathbf{g}\Delta t_{ij}^2) = \sum_k\left[\Delta\mathbf{v}_{ik}\Delta t + \tfrac{1}{2}\Delta\mathbf{R}_{ik}(\tilde{\mathbf{a}}_k - \mathbf{b}^a - \boldsymbol{\eta}^a_k)\Delta t^2\right]}\tag{1.19}$$
-
-The right-hand sides contain **no** $\mathbf{R}_i, \mathbf{v}_i, \mathbf{p}_i$ — only IMU samples and the bias. That single property is the whole of preintegration, so it is worth being explicit about what it buys.
-
-**Read each box as a split, not as an equation.** Everything the optimizer owns sits on the left; everything the IMU knows sits on the right:
-
-```
-     LEFT — states only                    RIGHT — IMU data only
-  (cheap; re-evaluated every            (expensive; computed ONCE per
-   optimizer iteration)                  keyframe, then never again)
-
-  R_iᵀ (v_j − v_i − g·Δt_ij)      =      Σ_k [ ΔR_ik (ã_k − b_a) Δt ]
-                                                ▲
-                                                └── relative rotation,
-                                                    from gyro alone.
-                                          No R_i.  No v_i.  No p_i.
-```
-
-Before the split, $\mathbf{R}_k = \mathbf{R}_i\Delta\mathbf{R}_{ik}$ sat *inside* the sum, so every term moved whenever the optimizer touched $\mathbf{R}_i$ — which it does every iteration. Pulling $\mathbf{R}_i^\top$ out front separates *where the body was pointing at time $i$* (a variable) from *how it rotated between $i$ and $k$* (pure gyro data). Only the second survives inside the sum.
-
-**The consequence: the right-hand side is a constant.** Compute it once when the keyframe is created and it becomes a fixed measurement — no different from a GPS fix or a pixel observation. The optimizer may move $\mathbf{R}_i, \mathbf{v}_i, \mathbf{p}_i$ anywhere it likes and that number never needs recomputing. This is precisely what the *pre* in preintegration means: integrated in advance, once, before and independently of the optimization.
-
-What it saves, concretely — 200 Hz IMU, 10 Hz keyframes (20 samples per factor), a 10-keyframe window (9 IMU factors), ~10 LM iterations per solve:
-
-| | Work per optimizer solve |
-|---|---|
-| Naive re-integration | $10\times 9\times 20 =$ **1800 integration steps**, each carrying an $\mathrm{Exp}$ and several 3×3 products |
-| Preintegrated | **20 steps once** for the new factor, then $10\times 9$ residual evaluations of a few matrix products each |
-
-The sharper consequence is that **optimizer cost decouples from IMU rate.** Go from 200 Hz to 1 kHz and the per-iteration cost is unchanged — the extra samples fold into the same fixed-size $\Delta\mathbf{R}, \Delta\mathbf{v}, \Delta\mathbf{p}$. Without preintegration a faster IMU directly slows the backend, which is a deeply unhelpful trade to be forced into.
-
-The intuition, if the algebra obscures it: storing the motion between two keyframes as raw IMU samples is like describing a route as every GPS breadcrumb along it — move the start point and you must re-walk the whole thing. Preintegration instead stores *"B is 3.2 km northeast of A, rotated 40°."* That relative displacement stays valid wherever A turns out to be. The IMU only ever measured relative motion; this algebra just makes that explicit.
-
-**One dependency survives.** $\mathbf{b}^g$ and $\mathbf{b}^a$ are still on the right-hand side, and they are optimization variables too — so the constant is only constant *for a fixed bias estimate*. That leftover is the entire reason §1.6 exists: rather than re-integrate when the bias moves, store $\partial\Delta\bar{\mathbf{v}}/\partial\mathbf{b}$ and its siblings and apply a first-order patch. Same motivation twice over — never touch the raw IMU stream again.
-
-(Lupton & Sukkarieh 2012 in Euler angles; Forster et al. 2015/2017 on-manifold, which is what GTSAM implements.)
-
-## 1.5 Noise propagation
-
-Separate the noise-free part $\Delta\bar{\mathbf{R}}$ from perturbation. Using the right-Jacobian BCH identity, the *measurement* equals the noise-free value perturbed by noise:
-
-$$\Delta\tilde{\mathbf{R}}_{ij} = \Delta\bar{\mathbf{R}}_{ij}\,\mathrm{Exp}(\delta\boldsymbol{\phi}_{ij}), \quad \Delta\tilde{\mathbf{v}}_{ij} = \Delta\bar{\mathbf{v}}_{ij} + \delta\mathbf{v}_{ij}, \quad \Delta\tilde{\mathbf{p}}_{ij} = \Delta\bar{\mathbf{p}}_{ij} + \delta\mathbf{p}_{ij}\tag{1.20}$$
-
-**Mind the direction of this definition.** All three must perturb the *same* way — measurement $=$ truth $\oplus$ noise. Forster (eq. 35–37) and Qiu's derivation write the algebraically identical inverse form, solving for the true value instead:
-
-$$\Delta\mathbf{R}_{ij} = \Delta\tilde{\mathbf{R}}_{ij}\,\mathrm{Exp}(-\delta\boldsymbol{\phi}_{ij}), \quad \Delta\mathbf{v}_{ij} = \Delta\tilde{\mathbf{v}}_{ij} - \delta\mathbf{v}_{ij}, \quad \Delta\mathbf{p}_{ij} = \Delta\tilde{\mathbf{p}}_{ij} - \delta\mathbf{p}_{ij}\tag{1.21}$$
-
-Writing $\mathrm{Exp}(-\delta\boldsymbol{\phi})$ alongside $+\,\delta\mathbf{v}$ — mixing the two forms in one line — silently flips the sign of $\delta\boldsymbol{\phi}$ relative to the $\mathbf{A}$ recursion (1.23) below, and the resulting covariance is wrong in the rotation block only. It is a hard bug to see because $\boldsymbol{\Sigma}$ stays symmetric positive-definite and merely mis-weights.
-
-The 9-dimensional noise vector $\boldsymbol{\eta}_{ij} = [\delta\boldsymbol{\phi}_{ij}, \delta\mathbf{v}_{ij}, \delta\mathbf{p}_{ij}]^\top$ propagates linearly:
-
-$$\boldsymbol{\eta}_{ij} = \mathbf{A}_{j-1}\boldsymbol{\eta}_{ij-1} + \mathbf{B}_{j-1}\boldsymbol{\eta}^d_{j-1}\tag{1.22}$$
-
-$$
-\mathbf{A}_{k} = \begin{bmatrix}
-\Delta\tilde{\mathbf{R}}_{k,k+1}^\top & \mathbf{0} & \mathbf{0}\\
--\Delta\tilde{\mathbf{R}}_{ik}\lfloor\tilde{\mathbf{a}}_k - \mathbf{b}^a\rfloor_\times\Delta t & \mathbf{I} & \mathbf{0}\\
--\tfrac{1}{2}\Delta\tilde{\mathbf{R}}_{ik}\lfloor\tilde{\mathbf{a}}_k - \mathbf{b}^a\rfloor_\times\Delta t^2 & \mathbf{I}\Delta t & \mathbf{I}
-\end{bmatrix},
-\quad
-\mathbf{B}_k = \begin{bmatrix}
-\mathbf{J}^k_r\Delta t & \mathbf{0}\\
-\mathbf{0} & \Delta\tilde{\mathbf{R}}_{ik}\Delta t\\
-\mathbf{0} & \tfrac{1}{2}\Delta\tilde{\mathbf{R}}_{ik}\Delta t^2
-\end{bmatrix}\tag{1.23}
-$$
-
-$$\boldsymbol{\Sigma}_{ij} = \mathbf{A}_{j-1}\boldsymbol{\Sigma}_{ij-1}\mathbf{A}_{j-1}^\top + \mathbf{B}_{j-1}\boldsymbol{\Sigma}^\eta\mathbf{B}_{j-1}^\top\tag{1.24}$$
-
-This 9×9 (or 15×15 in the "combined" variant that carries bias) covariance becomes the noise model of the factor. It grows without bound with $\Delta t_{ij}$, which is *correct* — it's why a long gap between keyframes automatically down-weights the IMU factor without any special-casing.
-
-## 1.6 Bias correction — the second key idea
-
-$\Delta\bar{\mathbf{R}}, \Delta\bar{\mathbf{v}}, \Delta\bar{\mathbf{p}}$ were computed at a linearization bias $\bar{\mathbf{b}}$. The optimizer will change the bias estimate. Rather than re-integrate, store first-order Jacobians during integration and apply a linear correction:
-
-$$\Delta\bar{\mathbf{R}}_{ij}(\mathbf{b}^g) \approx \Delta\bar{\mathbf{R}}_{ij}(\bar{\mathbf{b}}^g)\,\mathrm{Exp}\!\left(\frac{\partial\Delta\bar{\mathbf{R}}_{ij}}{\partial\mathbf{b}^g}\delta\mathbf{b}^g\right)\tag{1.25}$$
-
-$$\Delta\bar{\mathbf{v}}_{ij}(\mathbf{b}) \approx \Delta\bar{\mathbf{v}}_{ij}(\bar{\mathbf{b}}) + \frac{\partial\Delta\bar{\mathbf{v}}_{ij}}{\partial\mathbf{b}^g}\delta\mathbf{b}^g + \frac{\partial\Delta\bar{\mathbf{v}}_{ij}}{\partial\mathbf{b}^a}\delta\mathbf{b}^a\tag{1.26}$$
-
-$$\Delta\bar{\mathbf{p}}_{ij}(\mathbf{b}) \approx \Delta\bar{\mathbf{p}}_{ij}(\bar{\mathbf{b}}) + \frac{\partial\Delta\bar{\mathbf{p}}_{ij}}{\partial\mathbf{b}^g}\delta\mathbf{b}^g + \frac{\partial\Delta\bar{\mathbf{p}}_{ij}}{\partial\mathbf{b}^a}\delta\mathbf{b}^a\tag{1.27}$$
-
-These five Jacobians propagate incrementally alongside the mean and covariance (recursions in Forster §III-C, implemented in §1.8 below). In closed form they are (1.28)–(1.30):
-
-$$\frac{\partial\Delta\bar{\mathbf{R}}_{ij}}{\partial\mathbf{b}^g} = -\sum_{k=i}^{j-1}\Delta\bar{\mathbf{R}}_{k+1,j}^\top\,\mathbf{J}_r^k\,\Delta t\tag{1.28}$$
-
-$$\frac{\partial\Delta\bar{\mathbf{v}}_{ij}}{\partial\mathbf{b}^a} = -\sum_{k=i}^{j-1}\Delta\bar{\mathbf{R}}_{ik}\Delta t, \qquad \frac{\partial\Delta\bar{\mathbf{v}}_{ij}}{\partial\mathbf{b}^g} = -\sum_{k=i}^{j-1}\Delta\bar{\mathbf{R}}_{ik}\lfloor\tilde{\mathbf{a}}_k-\bar{\mathbf{b}}^a\rfloor_\times\frac{\partial\Delta\bar{\mathbf{R}}_{ik}}{\partial\mathbf{b}^g}\Delta t\tag{1.29}$$
-
-$$\frac{\partial\Delta\bar{\mathbf{p}}_{ij}}{\partial\mathbf{b}^a} = \sum_{k=i}^{j-1}\left[\frac{\partial\Delta\bar{\mathbf{v}}_{ik}}{\partial\mathbf{b}^a}\Delta t - \tfrac{1}{2}\Delta\bar{\mathbf{R}}_{ik}\Delta t^2\right], \qquad \frac{\partial\Delta\bar{\mathbf{p}}_{ij}}{\partial\mathbf{b}^g} = \sum_{k=i}^{j-1}\left[\frac{\partial\Delta\bar{\mathbf{v}}_{ik}}{\partial\mathbf{b}^g}\Delta t - \tfrac{1}{2}\Delta\bar{\mathbf{R}}_{ik}\lfloor\tilde{\mathbf{a}}_k-\bar{\mathbf{b}}^a\rfloor_\times\frac{\partial\Delta\bar{\mathbf{R}}_{ik}}{\partial\mathbf{b}^g}\Delta t^2\right]\tag{1.30}$$
-
-Note the nesting: $\partial\Delta\bar{\mathbf{p}}/\partial\mathbf{b}$ is defined in terms of $\partial\Delta\bar{\mathbf{v}}/\partial\mathbf{b}$, which is itself defined in terms of $\partial\Delta\bar{\mathbf{R}}/\partial\mathbf{b}^g$. **That dependency chain dictates the update order in code** — position Jacobians first, then velocity, then rotation, each consuming the *previous* step's value. Update $\partial\Delta\bar{\mathbf{R}}/\partial\mathbf{b}^g$ first and every downstream Jacobian is one step out of date, which produces a bias correction that is subtly wrong only for large $\|\delta\mathbf{b}\|$ — i.e. exactly when you need it. The pseudocode in §1.8 is written in this order deliberately.
-
-**Re-integrate fully only when $\|\delta\mathbf{b}\|$ exceeds a threshold** (GTSAM exposes `biasAccOmegaInt` and repropagation control). This is the practical knob: too loose and the linear correction is invalid, too tight and you lose the performance benefit.
-
-## 1.7 Residuals
-
-$$\mathbf{r}_{\Delta\mathbf{R}_{ij}} = \mathrm{Log}\!\left(\left[\Delta\tilde{\mathbf{R}}_{ij}(\bar{\mathbf{b}}^g)\,\mathrm{Exp}\!\left(\tfrac{\partial\Delta\bar{\mathbf{R}}_{ij}}{\partial\mathbf{b}^g}\delta\mathbf{b}^g\right)\right]^\top \mathbf{R}_i^\top\mathbf{R}_j\right)\tag{1.31}$$
-
-$$\mathbf{r}_{\Delta\mathbf{v}_{ij}} = \mathbf{R}_i^\top(\mathbf{v}_j - \mathbf{v}_i - \mathbf{g}\Delta t_{ij}) - \Delta\tilde{\mathbf{v}}_{ij}(\mathbf{b})\tag{1.32}$$
-
-$$\mathbf{r}_{\Delta\mathbf{p}_{ij}} = \mathbf{R}_i^\top\left(\mathbf{p}_j - \mathbf{p}_i - \mathbf{v}_i\Delta t_{ij} - \tfrac{1}{2}\mathbf{g}\Delta t_{ij}^2\right) - \Delta\tilde{\mathbf{p}}_{ij}(\mathbf{b})\tag{1.33}$$
-
-Plus a bias random-walk factor between consecutive bias nodes:
-
-$$\mathbf{r}_b = \mathbf{b}_j - \mathbf{b}_i, \qquad \boldsymbol{\Sigma}_b = \Delta t_{ij}\,\mathrm{diag}(\sigma_{bg}^2\mathbf{I}, \sigma_{ba}^2\mathbf{I})\tag{1.34}$$
-
-The IMU factor is therefore a **15-dimensional residual** connecting $\{\mathbf{R}_i,\mathbf{p}_i,\mathbf{v}_i,\mathbf{b}_i\}$ and $\{\mathbf{R}_j,\mathbf{p}_j,\mathbf{v}_j,\mathbf{b}_j\}$ — six variables in GTSAM's `ImuFactor` + `BetweenFactor<Bias>`, or four in `CombinedImuFactor` which folds the bias evolution in.
-
-**The analytic Jacobians in full.** These are taken with respect to the *increments* used to lift each state, under the right perturbation $\mathbf{R} \leftarrow \mathbf{R}\,\mathrm{Exp}(\delta\boldsymbol{\phi})$:
-
-$$\mathbf{R}\leftarrow\mathbf{R}\,\mathrm{Exp}(\delta\boldsymbol{\phi}), \qquad \mathbf{p}\leftarrow\mathbf{p}+\mathbf{R}\,\delta\mathbf{p}, \qquad \mathbf{v}\leftarrow\mathbf{v}+\delta\mathbf{v}, \qquad \mathbf{b}\leftarrow\mathbf{b}+\delta\mathbf{b}\tag{1.35}$$
-
-| | $\mathbf{r}_{\Delta\mathbf{R}}$ | $\mathbf{r}_{\Delta\mathbf{v}}$ | $\mathbf{r}_{\Delta\mathbf{p}}$ |
+| Type | Fields | Produced by | Consumed by |
 |---|---|---|---|
-| $\delta\boldsymbol{\phi}_i$ | $-\mathbf{J}_r^{-1}(\mathbf{r}_{\Delta\mathbf{R}})\mathbf{R}_j^\top\mathbf{R}_i$ | $\lfloor\mathbf{R}_i^\top(\mathbf{v}_j-\mathbf{v}_i-\mathbf{g}\Delta t_{ij})\rfloor_\times$ | $\lfloor\mathbf{R}_i^\top(\mathbf{p}_j-\mathbf{p}_i-\mathbf{v}_i\Delta t_{ij}-\tfrac{1}{2}\mathbf{g}\Delta t_{ij}^2)\rfloor_\times$ |
-| $\delta\mathbf{p}_i$ | $\mathbf{0}$ | $\mathbf{0}$ | $-\mathbf{I}$ |
-| $\delta\mathbf{v}_i$ | $\mathbf{0}$ | $-\mathbf{R}_i^\top$ | $-\mathbf{R}_i^\top\Delta t_{ij}$ |
-| $\delta\boldsymbol{\phi}_j$ | $\mathbf{J}_r^{-1}(\mathbf{r}_{\Delta\mathbf{R}})$ | $\mathbf{0}$ | $\mathbf{0}$ |
-| $\delta\mathbf{p}_j$ | $\mathbf{0}$ | $\mathbf{0}$ | $\mathbf{R}_i^\top\mathbf{R}_j$ |
-| $\delta\mathbf{v}_j$ | $\mathbf{0}$ | $\mathbf{R}_i^\top$ | $\mathbf{0}$ |
-| $\delta\mathbf{b}^g_i$ | see below | $-\dfrac{\partial\Delta\bar{\mathbf{v}}_{ij}}{\partial\mathbf{b}^g}$ | $-\dfrac{\partial\Delta\bar{\mathbf{p}}_{ij}}{\partial\mathbf{b}^g}$ |
-| $\delta\mathbf{b}^a_i$ | $\mathbf{0}$ | $-\dfrac{\partial\Delta\bar{\mathbf{v}}_{ij}}{\partial\mathbf{b}^a}$ | $-\dfrac{\partial\Delta\bar{\mathbf{p}}_{ij}}{\partial\mathbf{b}^a}$ |
+| `ImuSample` | $t$, $\tilde{\boldsymbol{\omega}}$ [rad/s], $\tilde{\mathbf{a}}$ [m/s²] | IMU driver | Preintegrator (Ch.2), output predictor, autopilot EKF (Ch.6) |
+| `Frame` | $t_{\text{mid}}$, image(s), intrinsics, extrinsics | camera / LiDAR driver | Frontend (Ch.4) |
+| `PreintegratedImu` | $\Delta\tilde{\mathbf{R}}, \Delta\tilde{\mathbf{v}}, \Delta\tilde{\mathbf{p}}$, $\boldsymbol{\Sigma}_{ij}$, $\partial\Delta/\partial\mathbf{b}$ (×5), $\bar{\mathbf{b}}$, $\Delta t_{ij}$ | **Preintegrator (Ch.2)** | Backend, as `ImuFactor` (Ch.3 §3.5) |
+| `NavState` | $\mathbf{R}, \mathbf{p}, \mathbf{v}$ — an element of $SE_2(3)$ — plus bias $\mathbf{b}$ | Backend (Ch.3) | Frontend prediction, output predictor, preintegrator reset |
+| `Feature` | pixel, descriptor, track id, pyramid level | Frontend (Ch.4 §4.3) | Data association, triangulation |
+| `Landmark` | id, $\mathbf{X}_W$, descriptor, observation list | Frontend triangulation | Backend (Ch.3), map, place recognition |
+| `Keyframe` | id, $t$, `NavState`, `Feature[]`, `Landmark` refs | Keyframe selector | Backend, place recognition, map |
+| `Factor` | variable keys, residual $\mathbf{r}$, noise model $\boldsymbol{\Sigma}$ | every frontend | **Backend (Ch.3)** |
+| `LoopCandidate` | query kf, match kf, $\mathbf{T}_{\text{rel}}$, fitness score | Place recognition (Ch.5 §5.3) | Geometric verification → robust `Factor` |
+| `Odometry` | $t$, pose, twist, $\boldsymbol{\Sigma}$, `frame_id` / `child_frame_id` | Output predictor | Controller, autopilot EKF (Ch.6 §6.9) |
+| `MapUpdate` | submap / grid / TSDF / ESDF delta | Map maintenance (Ch.5 §5.5) | Planner, costmap |
 
-The gyro-bias column of $\mathbf{r}_{\Delta\mathbf{R}}$ (1.36) is the only genuinely awkward one, because the bias enters *inside* a $\mathrm{Log}$ through another $\mathrm{Exp}$:
+Two conventions worth stating once, because violating either is a *class* of bug rather than a single one:
 
-$$\frac{\partial\mathbf{r}_{\Delta\mathbf{R}}}{\partial\delta\mathbf{b}^g_i} = -\mathbf{J}_r^{-1}(\mathbf{r}_{\Delta\mathbf{R}})\,\mathrm{Exp}(-\mathbf{r}_{\Delta\mathbf{R}})\,\mathbf{J}_r\!\left(\frac{\partial\Delta\bar{\mathbf{R}}_{ij}}{\partial\mathbf{b}^g}\delta\mathbf{b}^g_i\right)\frac{\partial\Delta\bar{\mathbf{R}}_{ij}}{\partial\mathbf{b}^g}\tag{1.36}$$
+- **Every pose-like type carries its frame pair explicitly.** An `Odometry` without `frame_id`/`child_frame_id` is not a pose, it is a rumour. §1.6 fixes which pair each component may emit.
+- **Every measurement-like type carries its covariance**, always expressed in the tangent space at the mean (§0.4). A `PreintegratedImu` without $\boldsymbol{\Sigma}_{ij}$ cannot be weighted, and an unweighted factor silently dominates the graph.
 
-**Why $\mathbf{p}$ is lifted as $\mathbf{p}+\mathbf{R}\,\delta\mathbf{p}$, and why it matters.** That convention is not arbitrary — it is what you get by right-multiplying the pose matrix $\mathbf{T}_i = \begin{bmatrix}\mathbf{R}_i & \mathbf{p}_i\\ \mathbf{0} & 1\end{bmatrix}$ by a perturbation $\delta\mathbf{T}_i$, which gives $\mathbf{R}_i\delta\mathbf{R}_i$ and $\mathbf{p}_i + \mathbf{R}_i\delta\mathbf{p}_i$ together. It keeps the increment body-resolved and consistent with the right perturbation already used for rotation, so $\delta\mathbf{p}$ means "displacement expressed in the body frame."
+## 1.3 Rate domains
 
-The payoff is the clean $-\mathbf{I}$ and $\mathbf{R}_i^\top\mathbf{R}_j$ entries above. **If your code instead lifts position additively in the world frame** ($\mathbf{p}\leftarrow\mathbf{p}+\delta\mathbf{p}$, which is what a naive `Vector3` state does), those two entries become $-\mathbf{R}_i^\top$ and $+\mathbf{R}_i^\top$. Both conventions are correct; mixing the analytic Jacobian of one with the retraction of the other is a silent, direction-dependent convergence bug — the optimizer still descends, just along the wrong metric, so it converges slowly rather than failing outright.
+Four clocks. The boundary between them is always a queue, never a function call.
 
-## 1.8 Pseudocode
-
-Every line that implements a numbered equation cites it, so this reads as a direct transcription of §§1.1–1.7 rather than as free-standing code.
-
-```
-struct Preintegrated:
-    dR = I3;  dV = 0;  dP = 0;          # mean
-    Sigma = zeros(9,9)                   # covariance (or 15x15 combined)
-    J_dR_bg = 0; J_dV_bg = 0; J_dV_ba = 0
-    J_dP_bg = 0; J_dP_ba = 0             # bias Jacobians
-    dt_total = 0
-    b_bar = (bg_bar, ba_bar)             # linearization bias
-
-integrate_measurement(P, w_tilde, a_tilde, dt):
-    w = w_tilde - P.b_bar.bg             # (1.5)  invert gyro model
-    a = a_tilde - P.b_bar.ba             # (1.6)  invert accel model
-    dR_k  = Exp(w * dt)                  # (1.10) one-step rotation, exact under ZOH
-    Jr_k  = right_jacobian(w * dt)       # J_r of §0.1, feeds B and J_dR_bg
-
-    # --- mean (order matters: use OLD dR for v/p, then update dR) ---
-    P.dP += P.dV*dt + 0.5*P.dR*a*dt*dt   # (1.19) dp summand
-    P.dV += P.dR*a*dt                    # (1.18) dv summand
-    P.dR  = normalize(P.dR * dR_k)       # (1.17) dR product
-
-    # --- covariance ---
-    A = build_A(P.dR_old, a, dR_k, dt)   # (1.23) 9x9
-    B = build_B(P.dR_old, Jr_k, dt)      # (1.23) 9x6
-    P.Sigma = A @ P.Sigma @ A.T + B @ Sigma_eta @ B.T      # (1.24)
-
-    # --- bias Jacobians: recursions equivalent to closed forms (1.28)-(1.30).
-    #     Order is load-bearing — each consumes the PREVIOUS step's value:
-    #     dP uses the old dV Jacobians, dV the old dR one (updated last).
-    P.J_dP_ba += P.J_dV_ba*dt - 0.5*P.dR_old*dt*dt                    # (1.30) b_a
-    P.J_dP_bg += P.J_dV_bg*dt - 0.5*P.dR_old*skew(a)*P.J_dR_bg*dt*dt  # (1.30) b_g
-    P.J_dV_ba += -P.dR_old*dt                                         # (1.29) b_a
-    P.J_dV_bg += -P.dR_old*skew(a)*P.J_dR_bg*dt                       # (1.29) b_g
-    P.J_dR_bg  = dR_k.T @ P.J_dR_bg - Jr_k*dt                         # (1.28)
-
-    P.dt_total += dt
-
-corrected(P, b_new):
-    d_bg = b_new.bg - P.b_bar.bg
-    d_ba = b_new.ba - P.b_bar.ba
-    if norm(d_bg) > TH_G or norm(d_ba) > TH_A:
-        return repropagate(P, b_new)     # linear patch invalid — re-integrate
-    dR = P.dR * Exp(P.J_dR_bg @ d_bg)                      # (1.25)
-    dV = P.dV + P.J_dV_bg@d_bg + P.J_dV_ba@d_ba            # (1.26)
-    dP = P.dP + P.J_dP_bg@d_bg + P.J_dP_ba@d_ba            # (1.27)
-    return (dR, dV, dP)
-
-# The (dR, dV, dP, Sigma) this produces is the measurement carried by the IMU
-# factor; the residuals (1.31)-(1.33) difference it against the current states.
+```mermaid
+flowchart LR
+  A["<b>A · IMU</b><br/>200–1000 Hz<br/>integrate · predict · publish"]
+  B["<b>B · Frame</b><br/>10–60 Hz<br/>track · decide keyframe"]
+  C["<b>C · Keyframe</b><br/>1–10 Hz<br/>optimize window"]
+  D["<b>D · Loop</b><br/>opportunistic<br/>global optimize"]
+  A -->|ring buffer| B
+  B -->|queue| C
+  C -->|queue| D
+  D -.->|"map→odom correction<br/>never blocks A"| A
 ```
 
-Two implementation notes that cost people days:
+| Domain | Period | Must never | Because |
+|---|---|---|---|
+| **A** IMU | 1–5 ms | allocate, lock, or wait | the only path with a hard real-time deadline — the controller consumes it |
+| **B** Frame | 16–100 ms | wait on the backend | dropping a frame loses tracking; frames must be processed or explicitly skipped |
+| **C** Keyframe | 0.1–1 s | wait on loop closure | a large closure can take seconds; local odometry must not stall behind it |
+| **D** Loop | seconds–minutes | write state that A reads directly | its corrections are discrete jumps; they belong on `map→odom` |
 
-- **Use midpoint (or RK4) integration**, not Euler, for $\tilde{\mathbf{a}}$ and $\tilde{\boldsymbol{\omega}}$ between samples. VINS-Mono uses midpoint. The accuracy gain is free. Note that Forster's derivation as published *is* Euler — plain zero-order hold, not the higher-order coning/sculling schemes of classical strapdown INS — so this is an implementation upgrade over the paper, not a restatement of it. Swapping in midpoint changes only which $\Delta\bar{\mathbf{R}}_{ik}$ enters each sum; the $\mathbf{A}$/$\mathbf{B}$ structure is untouched.
-- **Re-orthonormalize `dR` periodically.** Repeated matrix products drift off $SO(3)$ in float. Quaternion normalization is the usual fix.
+The most common architectural failure in a first SLAM implementation is calling the backend synchronously from the frame callback — coupling domain B to domain C, so tracking hiccups exactly when the optimizer is working hardest.
 
-## 1.9 Architecture
+## 1.4 Component interfaces
 
-```
-   IMU 200-1000 Hz
-        │
-        ▼
- ┌──────────────┐   raw (ω̃, ã, t)
- │ IMU ring buf │───────────────────────────────┐
- └──────┬───────┘                               │
-        │                                       │  (for deskewing,
-        ▼                                       │   image-time interp,
- ┌────────────────────────────────────┐         │   high-rate output)
- │  Preintegrator                     │         │
- │  ┌──────────────────────────────┐  │         │
- │  │ mean:  ΔR, Δv, Δp            │  │         │
- │  │ cov:   Σ (9x9 / 15x15)       │  │         │
- │  │ jac:   ∂Δ/∂b_g, ∂Δ/∂b_a      │  │         │
- │  └──────────────────────────────┘  │         │
- └────────────────┬───────────────────┘         │
-                  │ on keyframe trigger         │
-                  ▼                             │
-        ┌───────────────────┐                   │
-        │  ImuFactor(i,j)   │                   │
-        └─────────┬─────────┘                   │
-                  ▼                             │
-   ╔══════════════════════════════════╗         │
-   ║  Factor graph  /  sliding window ║         │
-   ║  x_i ──[IMU]── x_j ──[IMU]── x_k ║         │
-   ║   │            │            │    ║         │
-   ║ [vision/lidar factors]           ║         │
-   ╚══════════════┬═══════════════════╝         │
-                  │ optimized state @ keyframe  │
-                  ▼                             ▼
-            ┌───────────────────────────────────────┐
-            │  IMU forward-propagation to now       │──► high-rate
-            │  (re-integrate from last KF state)    │    odometry out
-            └───────────────────────────────────────┘
-```
-
-The right-hand path is essential and often forgotten: the optimizer produces a state at the *last keyframe*, which is 50–100 ms stale. The controller needs a state *now*. You forward-propagate the raw IMU from the optimized keyframe state. This is exactly the same architectural idea as PX4's output predictor in Chapter 5.
-
-## 1.10 Where this factor goes next
-
-Preintegration is not a destination — it is a manufacturing step. What §1.8 produces is a self-contained bundle:
+Signatures only. Each is implemented by the chapter named on the right.
 
 ```
-   ΔR̃_ij, Δṽ_ij, Δp̃_ij     the measurement (mean)
-   Σ_ij                      its covariance  → becomes the factor's weight
-   ∂Δ/∂b (five Jacobians)    lets the measurement follow the bias estimate
-   b̄, Δt_ij                  the linearization point it was built at
+Preintegrator                                                    Chapter 2
+    integrate(ImuSample)                    -> ()                  §2.8
+    predict(NavState, Bias)                 -> NavState            §2.4
+    finish()                                -> PreintegratedImu    §2.4
+    reset(Bias)                             -> ()                  §2.6
+    correct(PreintegratedImu, Bias)         -> PreintegratedImu    §2.6
+
+Frontend                                                         Chapter 4
+    process(Frame, NavState prior)          -> Feature[]           §4.3
+    associate(Feature[], Landmark[])        -> Match[]             §4.1
+    triangulate(Match[], NavState[])        -> Landmark[]          §4.2
+    is_keyframe(Frame, Match[])             -> bool                §4.3
+
+Backend                                                          Chapter 3
+    add(Factor[])                           -> ()                  §3.1
+    update(Values initial_guess)            -> Values              §3.4
+    marginalize(Key[])                      -> ()                  §3.3
+    at(Key)                                 -> NavState            §3.5
+
+PlaceRecognition                                                 Chapter 5
+    insert(Keyframe)                        -> ()                  §5.3
+    query(Keyframe)                         -> LoopCandidate[]     §5.3
+    verify(LoopCandidate)                   -> Factor | reject     §5.4
+
+MapMaintenance                                                   Chapter 5
+    insert(Keyframe, NavState)              -> ()                  §5.5
+    reoptimize(Values)                      -> MapUpdate           §5.6
+    query_esdf(point)                       -> (distance, grad)    §5.5
+
+OutputPredictor                                              Chapters 2 and 6
+    on_state(NavState @ t_kf)               -> ()                  §2.9
+    on_imu(ImuSample)                       -> Odometry @ now      §2.9 / §6.4
 ```
 
-Every downstream chapter consumes exactly that bundle:
+`OutputPredictor` appears twice deliberately. It is the same idea in both halves of this document — integrate raw IMU forward from a stale optimized state to produce a current one — and PX4's version (§6.4) is the mature implementation of what §2.9 sketches.
 
-| Where | What it becomes |
-|---|---|
-| [Chapter 2 §2.5](chapter-2.md) | `PreintegratedImuMeasurements` inside GTSAM's `ImuFactor` (5 variables) or `CombinedImuFactor` (6, bias evolution folded in) — one **edge** joining keyframe $i$ to keyframe $j$ |
-| [Chapter 2 §2.6](chapter-2.md) | the `CombinedImuFactor(X(i-1), V(i-1), X(i), V(i), B(i-1), B(i), pim)` line of the LIO-SAM-shaped graph, with `pim.resetIntegrationAndSetBias()` closing the loop back to §1.6 |
-| [Chapter 3 §3.2](chapter-3.md) | the second term of the VI bundle-adjustment objective, $\sum_i\lVert\mathbf{r}_{\mathcal{I}(i,i+1)}\rVert^2_{\boldsymbol{\Sigma}_\mathcal{I}}$ — the inertial half, sitting beside visual reprojection |
-| [Chapter 3 §3.3](chapter-3.md) | ORB-SLAM3's pose prediction and its inertial-only MAP initialization, which estimates scale, gravity and biases against a fixed visual trajectory |
-| [Chapter 4 §4.3](chapter-4.md) | one link of the pose chain in the canonical SLAM pipeline, the part that survives when loop closure re-optimizes everything around it |
-| [Chapter 5](chapter-5.md) | *not* consumed as a factor at all — the autopilot runs a filter, where the IMU is an **input to state prediction, never an observation**. The odometry that VIO/SLAM produced from these factors arrives instead as an external-vision aiding source (§5.4, §5.7) |
+## 1.5 Top-level pseudocode
 
-That last row is the one worth sitting with. Chapters 1–4 treat the IMU as a *measurement between two poses* and solve for both. Chapter 5 treats it as a *control input* that drives the state forward, and never forms an IMU residual at all. Same sensor, two irreconcilable roles — and on a real vehicle both run simultaneously, with the optimizer's output entering the filter as just another aiding source.
+The whole system, with every call resolving to an interface above. Later chapters replace a single line here with a section.
+
+```
+# ═══════ domain A — IMU rate, 200-1000 Hz, hard real-time ═══════
+on imu_sample(s: ImuSample):
+    imu_buffer.push(s)
+    preint.integrate(s)                            # Ch.2 §2.8
+    state_now = output_pred.on_imu(s)              # Ch.2 §2.9
+    publish(Odometry(state_now, "odom", "base_link"))
+
+# ═══════ domain B — frame rate, 10-60 Hz ═══════
+on frame(f: Frame):
+    prior   = preint.predict(last_kf.state, last_kf.bias)     # Ch.2 §2.4
+    feats   = frontend.process(f, prior)                      # Ch.4 §4.3
+    matches = frontend.associate(feats, local_map.landmarks)  # Ch.4 §4.1
+    if matches.empty():
+        relocalize() or atlas.new_map();  return              # Ch.4 §4.3
+    if not frontend.is_keyframe(f, matches): return
+    kf_queue.push(Keyframe(f, feats, matches, prior))         # → domain C
+
+# ═══════ domain C — keyframe rate, 1-10 Hz ═══════
+loop:
+    kf = kf_queue.pop()
+
+    imu_meas = preint.finish()                                # PreintegratedImu
+    preint.reset(bias = last_kf.bias)                         # Ch.2 §2.6 — critical
+
+    factors  = [ ImuFactor(last_kf.key, kf.key, imu_meas) ]           # Ch.3 §3.5
+    factors += [ ProjectionFactor(kf.key, m) for m in kf.matches ]    # Ch.4 §4.1
+    if gnss.ready(): factors += [ GnssFactor(kf.key, gnss.pop()) ]    # Ch.3 §3.5
+
+    backend.add(factors)                                      # Ch.3 §3.1
+    values  = backend.update(initial_guess = imu_meas.predict(last_kf.state))
+    last_kf = kf.with_state(backend.at(kf.key))               # Ch.3 §3.4
+
+    output_pred.on_state(last_kf.state)                       # hand back to domain A
+    map.insert(kf, last_kf.state)                             # Ch.5 §5.5
+    place_rec.insert(kf);  loop_queue.push(kf)                # → domain D
+
+# ═══════ domain D — loop closure, opportunistic, async ═══════
+loop:
+    kf = loop_queue.pop()
+    for cand in place_rec.query(kf):                          # Ch.5 §5.3
+        factor = place_rec.verify(cand)                       # Ch.5 §5.4
+        if factor is reject: continue
+        backend.add([factor])                                 # robust kernel — Ch.3 §3.6
+        values = backend.update()
+        publish_map_to_odom(values)                           # a TF, not odometry
+        map.reoptimize(values)                                # Ch.5 §5.6
+```
+
+Four invariants this skeleton exists to enforce:
+
+1. **`preint.reset()` runs exactly once per keyframe, with the newly optimized bias.** Forget it and the next interval integrates against a stale linearization point (Ch.2 §2.6).
+2. **The backend's initial guess comes from the IMU prediction, never from identity.** Gauss-Newton is local (Ch.3 §3.6).
+3. **Loop closure writes `map→odom`, never the odometry stream.** Domain A must never see a discrete jump (§1.6).
+4. **Domain C hands state *back* to domain A** through `output_pred.on_state()`. Without that arrow the high-rate output slowly diverges from the optimized trajectory.
+
+## 1.6 Frames — who owns which TF edge
+
+REP-105, and it is an ownership question, not a naming one.
+
+```mermaid
+flowchart LR
+  MAP(("map")) -->|"loop closure / global<br/><b>domain D</b> · discrete jumps"| ODOM(("odom"))
+  ODOM -->|"VIO / LIO odometry<br/><b>domains A+C</b> · smooth, drifts"| BASE(("base_link"))
+  BASE -->|"static extrinsic calibration<br/>online only if observable"| SENS(("imu · camera<br/>lidar · gnss"))
+```
+
+| Edge | Owner | Property the consumer relies on |
+|---|---|---|
+| `map → odom` | loop closure / global optimizer (domain D) | **may jump**; corrects accumulated drift |
+| `odom → base_link` | VIO/LIO + output predictor (domains A, C) | **continuous and smooth**; drifts without bound |
+| `base_link → sensor` | calibration | static, or slowly varying and only if observable |
+
+The point of the two-layer split is that a controller consumes `odom→base_link` and therefore never sees a loop-closure step. Collapsing the layers — publishing the globally corrected pose as odometry — is the `map→odom` jump failure of Ch.5 §5.8, and it is exactly why §6.9 says to send *odometry* to the autopilot rather than the loop-closed pose.
+
+## 1.7 One keyframe, end to end
+
+The same story as §1.5, in time order, showing which domain each step runs in.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant I as IMU (A)
+    participant P as Preintegrator Ch.2
+    participant F as Frontend Ch.4
+    participant B as Backend Ch.3
+    participant L as Loop/Map Ch.5
+    participant O as OutputPred Ch.2/6
+
+    loop every IMU sample, 1-5 ms
+        I->>P: ImuSample
+        I->>O: ImuSample
+        O-->>O: Odometry @ now → controller
+    end
+
+    F->>P: predict(last state)
+    P-->>F: NavState prior
+    Note over F: track features against prior,<br/>decide keyframe
+
+    F->>P: finish()
+    P-->>B: PreintegratedImu → ImuFactor
+    F-->>B: ProjectionFactor[]
+    B->>B: update() — sliding-window solve
+    B-->>P: reset(new bias)
+    B-->>O: on_state(NavState @ kf)
+    B-->>L: Keyframe + NavState
+
+    L->>L: place recognition + geometric verification
+    L-->>B: LoopFactor (robust)
+    B->>B: global update
+    L-->>L: publish map→odom, reoptimize map
+```
+
+## 1.8 Which chapter implements which box
+
+| Component | Chapter | Produces | Consumes |
+|---|---|---|---|
+| Lie-group algebra used by all of them | [Ch.0](chapter-0.md) | Jacobians, $\oplus$/$\ominus$ | — |
+| Preintegrator, output predictor | [Ch.2](chapter-2.md) | `PreintegratedImu`, `Odometry` | `ImuSample`, `NavState` |
+| Backend / factor graph | [Ch.3](chapter-3.md) | `NavState`, `Values` | `Factor[]` |
+| Frontend, VIO as a whole | [Ch.4](chapter-4.md) | `Feature[]`, `Landmark[]`, `Factor[]` | `Frame`, `NavState` |
+| Place recognition, map, lifelong ops | [Ch.5](chapter-5.md) | `LoopCandidate`, `MapUpdate`, `map→odom` | `Keyframe`, `Values` |
+| Autopilot EKF — the *other* estimator | [Ch.6](chapter-6.md) | fused state → controller | `ImuSample`, `Odometry`, GNSS/baro/mag |
+
+If a later chapter ever seems to appear from nowhere, come back to §1.1 and find its box: the wire going in and the wire coming out are its entire contract with the rest of the system.
