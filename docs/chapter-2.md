@@ -360,6 +360,33 @@ Two implementation notes that cost people days:
 - **Use midpoint (or RK4) integration**, not Euler, for $\tilde{\mathbf{a}}$ and $\tilde{\boldsymbol{\omega}}$ between samples. VINS-Mono uses midpoint. The accuracy gain is free. Note that Forster's derivation as published *is* Euler — plain zero-order hold, not the higher-order coning/sculling schemes of classical strapdown INS — so this is an implementation upgrade over the paper, not a restatement of it. Swapping in midpoint changes only which $\Delta\bar{\mathbf{R}}_{ik}$ enters each sum; the $\mathbf{A}$/$\mathbf{B}$ structure is untouched.
 - **Re-orthonormalize `dR` periodically.** Repeated matrix products drift off $SO(3)$ in float. Quaternion normalization is the usual fix.
 
+
+### The same recursion, in shipping code
+
+NVIDIA's cuVSLAM implements exactly this, in [`libs/imu/imu_preintegration.cpp`](https://github.com/nvidia-isaac/cuVSLAM/blob/main/libs/imu/imu_preintegration.cpp). Its `IMUPreintegration` class carries `dR, dV, dP`, a 9×9 `cov_matrix_` commented *"covariance for [rotation, velocity, translation]"*, and the five bias Jacobians `JRg, JVg, JVa, JPg, JPa` — the same five as (2.28)–(2.30), under the same naming scheme.
+
+`IntegrateNewMeasurement()` reduces to:
+
+```cpp
+dP += dV * delta_t_s + 0.5f * dR * lin_acc * delta_t_s * delta_t_s;   // (2.19)
+dV += dR * lin_acc * delta_t_s;                                        // (2.18)
+dR  = CalculateRotationFromSVD(dR * deltaR);                           // (2.17)
+
+JPa += JVa * dt - 0.5f * dR * dt * dt;                                 // (2.30)
+JPg += JVg * dt - 0.5f * dR * dt * dt * SkewSymmetric(lin_acc) * JRg;  // (2.30)
+JVa -= dR * dt;                                                        // (2.29)
+JVg -= dR * dt * SkewSymmetric(lin_acc) * JRg;                         // (2.29)
+JRg  = deltaR.transpose() * JRg - rightJ * dt;                         // (2.28)
+```
+
+Three things to notice, because each confirms a point made above rather than merely agreeing with it:
+
+- **The ordering is the same** — `dP` before `dV` before `dR`, and the position Jacobians before velocity before rotation. That is the load-bearing constraint of §2.6, and independent code arrives at the same line order because there is no other correct one.
+- **`CalculateRotationFromSVD` is the re-orthonormalization** recommended above: they project back onto $SO(3)$ by SVD rather than by quaternion renormalization.
+- **It is Euler, not midpoint** — `dP`/`dV` use the *old* `dR`, which is updated afterwards. Faithful to Forster as published, exactly as noted above.
+
+The bias correction is (2.25)–(2.27) verbatim: `GetDeltaRotation()` returns $\Delta\bar{\mathbf{R}}\,\mathrm{Exp}(\mathtt{JRg}\,\delta\mathbf{b}^g)$, and `GetDeltaVelocity()`/`GetDeltaPosition()` return `dV + JVg*dbg + JVa*dba` and `dP + JPg*dbg + JPa*dba`. `Reintegrate()` is the full re-integration of §2.6, `InfoMatrix()` returns $\boldsymbol{\Sigma}^{-1}$ for whitening ([Ch.3 §3.1](chapter-3.md)), and separate `acc_/gyro_random_walk_accum_cov_matrix_` members carry the bias random-walk covariance of the $\mathbf{r}_b$ factor in (2.34). Everything is single-precision `float`.
+
 ## 2.9 Architecture
 
 ```mermaid
