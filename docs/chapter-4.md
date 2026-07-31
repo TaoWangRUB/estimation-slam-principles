@@ -155,34 +155,82 @@ Isaac ROS documents that all SLAM-related operations run in a separate thread in
 
 ```mermaid
 flowchart TB
-  CAMS["stereo pair(s)<br/>1 – 32 cameras"] --> GPU
-  IMUIN["IMU (optional)"] --> F3D
-
-  subgraph FE["FRONTEND — low-latency path"]
-    direction TB
-    GPU["GPU upload"]
-    F2D["<b>2D module</b><br/>patch-uniform Shi-Tomasi selection<br/>feature tracking · keyframe selection"]
-    F3D["<b>3D module</b><br/>stereo triangulation<br/>local odometry map (recent KF poses + landmarks)<br/>local optimization + IMU"]
-    GPU --> F2D --> F3D
+  subgraph IN["Input"]
+    IMGS["ImageSet — 1..32 cameras<br/>camera::Rig (intrinsics + extrinsics)"]
+    IMUM["ImuMeasurement<br/>RegisterImuMeasurement()"]
   end
 
-  F3D -->|"smooth odometry, high rate<br/><b>odom → base_link</b>"| NAV["Nav2 / controller"]
-  F3D -->|"keyframes, landmarks"| BE
-
-  subgraph BEG["BACKEND — asynchronous, separate thread"]
+  subgraph FE["FRONTEND — per frame, GPU"]
     direction TB
-    BE["global map: poses · 2D observations<br/>3D landmarks · pose deltas · features"]
-    LOOP["loop-closure detection"]
-    PGO["pose-graph optimization<br/><i>solved on GPU by cuNLS</i>"]
-    BE --> LOOP --> PGO
+    UP["GPU upload"]
+    PYR["image pyramid<br/><i>sof/basic_image_downscaler · convolutor · box_blur</i>"]
+    GFTT["GFTT / Shi-Tomasi keypoints, patch-uniform<br/><i>sof/gftt.cpp</i>"]
+    PRED["feature prediction — IMU-aided in inertial modes<br/><i>pipelines/feature_predictor</i>"]
+    TRACK["sparse optical-flow tracking<br/><i>sof/feature_tracker.h</i>"]
+    RANSAC["outlier rejection: fundamental / homography RANSAC<br/><i>libs/epipolar</i>"]
+    LIFT["lift 2D tracks → 3D · triangulate<br/><i>pipelines/track_lifter · triangulator</i>"]
+    PNP["pose estimation — PnP / visual ICP<br/><i>pnp/multicam_pnp · visual_icp · pipelines/inertial_pnp</i>"]
+    UP --> PYR --> GFTT --> TRACK
+    PRED --> TRACK
+    TRACK --> RANSAC --> LIFT --> PNP
   end
 
-  PGO -->|"corrected global pose<br/><b>map → odom</b>"| NAV
-  BEG --> SAVE[("SaveMap / LoadMap<br/>localization-only mode")]
+  subgraph IMUB["INERTIAL — libs/imu"]
+    direction TB
+    PRE["<b>IMUPreintegration</b><br/>dR, dV, dP · Σ 9×9 · 5 bias Jacobians<br/><i>imu_preintegration.cpp</i>"]
+    INIT["initialization: SolveGyroBias → SolveGravityDirection<br/>→ LinearAlignment → RefineGravity<br/><i>inertial_optimization.cpp</i>"]
+    SM["state machine<br/>Uninitialized → Initializing → Ok<br/><i>pipelines/tracker_state_machine</i>"]
+    PRE --> INIT --> SM
+  end
 
-  style F3D fill:#31456b,stroke:#8ab4f8,color:#fff
-  style PGO fill:#6b3145,stroke:#f8a1b4,color:#fff
+  subgraph LOCO["LOCAL OPTIMIZATION — keyframe rate"]
+    direction TB
+    SBA["Schur-complement bundler<br/><i>sba/schur_complement_bundler_{cpu,gpu}</i>"]
+    ISBA["<b>inertial BA</b> — joint visual + IMU<br/>ImuBAProblem: poses · velocities · biases · gravity · landmarks<br/><i>imu/imu_sba_gpu.h · cuNLS</i>"]
+    REF["robust costs — Huber-style loss<br/><i>refinement/cost_pinhole · loss_functions</i>"]
+    SBA --> ISBA --> REF
+  end
+
+  subgraph BE["BACKEND — asynchronous thread"]
+    direction TB
+    KFM["UnifiedMap: keyframes + landmarks<br/><i>map/keyframe · landmark · map</i>"]
+    ASLAM["async SLAM<br/><i>slam/async_slam</i>"]
+    LOOPC["loop closure → pose graph (nodes + edges)"]
+    LOCZ["localizer · LocalizeInMap · SaveMap<br/><i>slam/localizer · async_localizer</i>"]
+    KFM --> ASLAM --> LOOPC
+    ASLAM --> LOCZ
+  end
+
+  IMGS --> UP
+  IMUM --> PRE
+  SM --> PNP
+  PRE --> ISBA
+  PNP -->|"PoseEstimate — Odometry::Track()"| ODO(("odom → base_link<br/>smooth, high rate"))
+  PNP --> KFD{"keyframe?"}
+  KFD -->|yes| SBA
+  REF -->|"Odometry::State"| KFM
+  ISBA -.->|"new bias → first-order patch,<br/>or Reintegrate() past 1e-4"| PRE
+  LOOPC -->|"map → odom"| MAPO(("map → odom<br/>discrete corrections"))
+
+  style PRE fill:#31456b,stroke:#8ab4f8,color:#fff
+  style ISBA fill:#6b3145,stroke:#f8a1b4,color:#fff
+  style PNP fill:#31456b,stroke:#8ab4f8,color:#fff
 ```
+
+The per-frame settings struct decomposes along exactly these stages — `TrackPerFrameSettings` has `sof`, `kf`, `pnp` and `icp` sub-structs, one per box in the frontend row.
+
+| Module | Role |
+|---|---|
+| `libs/sof` | sparse optical flow: pyramid, GFTT/Shi-Tomasi, feature tracking |
+| `libs/epipolar` | fundamental matrix, homography, RANSAC, resectioning, reconstruction |
+| `libs/pnp` | mono / multicam PnP, visual ICP, multisensor pose estimator |
+| `libs/odometry` | per-mode odometry: mono, multi, RGB-D, stereo-inertial, multisensor; ground constraint |
+| `libs/imu` | preintegration, inertial SBA (CPU + GPU), gravity/bias initialization, gyro-bias NEC |
+| `libs/sba` | Schur-complement bundler, CPU and GPU |
+| `libs/refinement` | cost functions (pinhole, rational polynomial) and robust loss functions |
+| `libs/map` | keyframes, landmarks, depth-point and plane maps |
+| `libs/slam` | async SLAM, loop closure, localizer, map view |
+| `libs/pipelines` | orchestration — `track_online_{mono,multi,rgbd,inertial,multisensor}`, state machine, async SBA service |
 
 **Reported performance:** average trajectory error below 1% on KITTI odometry and mean position error under 5 cm on EuRoC, running in real time on Jetson. Deployed processing 8 Full-HD distorted RGB images at 30 FPS from 4 stereo cameras on a Jetson Orin AGX within the Isaac Perceptor framework. Multi-camera mode gives two documented benefits: trajectory reliability in feature-poor environments, and higher loop-closure detection rates. A demonstrated robustness test covered cameras randomly with opaque film for 20–60 s intervals with at least one stereo pair uncovered, and tracking survived.
 
