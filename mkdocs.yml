@@ -41,10 +41,10 @@ nav:
   - Home: index.md
   - "Ch. 0 — Lie Group Primer": chapter-0.md
   - "Ch. 1 — IMU Preintegration": chapter-1.md
-  - "Ch. 2 — EKF / INS (PX4 & ArduPilot)": chapter-2.md
+  - "Ch. 2 — GTSAM & Factor Graphs": chapter-2.md
   - "Ch. 3 — Visual-Inertial Odometry": chapter-3.md
-  - "Ch. 4 — GTSAM & Factor Graphs": chapter-4.md
-  - "Ch. 5 — SLAM as a Whole": chapter-5.md
+  - "Ch. 4 — SLAM as a Whole": chapter-4.md
+  - "Ch. 5 — EKF / INS (PX4 & ArduPilot)": chapter-5.md
   - References: references.md
 
 markdown_extensions:

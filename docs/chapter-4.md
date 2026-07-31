@@ -1,173 +1,167 @@
-# Chapter 4 — GTSAM and Factor Graphs
+# Chapter 4 — SLAM as a Whole
 
-## 4.1 The formulation
+## 4.1 Problem statement
 
-A factor graph is a bipartite graph: **variable nodes** $\mathbf{X} = \{\mathbf{x}_1,\dots,\mathbf{x}_n\}$ and **factor nodes** $\{\phi_i\}$, where each factor connects the subset of variables it constrains.
+**Full (smoothing) SLAM** — the whole trajectory:
 
-$$p(\mathbf{X}\mid\mathbf{Z}) \propto \prod_i \phi_i(\mathbf{X}_i)$$
+$$p(\mathbf{x}_{0:T}, \mathbf{m} \mid \mathbf{z}_{1:T}, \mathbf{u}_{1:T})$$
 
-With Gaussian noise, $\phi_i(\mathbf{X}_i) = \exp\!\left(-\tfrac{1}{2}\|h_i(\mathbf{X}_i) - \mathbf{z}_i\|^2_{\boldsymbol{\Sigma}_i}\right)$, so MAP inference becomes nonlinear least squares:
+**Online (filtering) SLAM** — only the current pose:
 
-$$\mathbf{X}^\star = \arg\min_\mathbf{X}\ \sum_i \left\|h_i(\mathbf{X}_i) - \mathbf{z}_i\right\|^2_{\boldsymbol{\Sigma}_i}$$
+$$p(\mathbf{x}_t, \mathbf{m}\mid \mathbf{z}_{1:t},\mathbf{u}_{1:t}) = \int p(\mathbf{x}_{0:t},\mathbf{m}\mid\cdot)\ d\mathbf{x}_{0:t-1}$$
 
-**Whitening.** Absorb $\boldsymbol{\Sigma}^{-1/2}$ (Cholesky) into the residual so every factor becomes unit-covariance and the problem is a plain $\|\cdot\|_2$ minimization. GTSAM does this internally; it is why `noiseModel::Diagonal::Sigmas` and `::Variances` are different functions and mixing them up silently mis-weights your graph by a square.
+Factorized via the Markov assumption:
 
-## 4.2 Linearization and solution
+$$p(\mathbf{x}_{0:T},\mathbf{m}\mid\mathbf{z},\mathbf{u}) \propto p(\mathbf{x}_0)\prod_{t}p(\mathbf{x}_t\mid\mathbf{x}_{t-1},\mathbf{u}_t)\prod_{t}\prod_{k}p(\mathbf{z}_t^k\mid\mathbf{x}_t,\mathbf{m})$$
 
-Linearize at $\mathbf{X}^{(k)}$, in the **tangent space**:
+That product **is** the factor graph of Chapter 2. Every SLAM system is an approximation to this posterior; the taxonomy below is just different approximation strategies.
 
-$$\mathbf{A}\,\delta = \mathbf{b}, \qquad \mathbf{A} = \begin{bmatrix}\boldsymbol{\Sigma}_1^{-1/2}\mathbf{J}_1\\ \vdots\end{bmatrix},\quad \mathbf{b} = \begin{bmatrix}\boldsymbol{\Sigma}_1^{-1/2}(\mathbf{z}_1 - h_1(\mathbf{X}^{(k)}))\\ \vdots\end{bmatrix}$$
+## 4.2 Taxonomy
 
-Normal equations: $\mathbf{A}^\top\mathbf{A}\,\delta = \mathbf{A}^\top\mathbf{b}$, where $\boldsymbol{\Lambda} = \mathbf{A}^\top\mathbf{A}$ is the **information matrix**. Solve by sparse Cholesky ($\boldsymbol{\Lambda} = \mathbf{R}^\top\mathbf{R}$) or QR on $\mathbf{A}$ directly (better conditioned — $\kappa(\mathbf{A}^\top\mathbf{A}) = \kappa(\mathbf{A})^2$).
+**EKF-SLAM.** State = pose + all landmarks. Covariance is dense (landmarks become correlated through the shared pose) → $O(n^2)$ memory and update. Inconsistent for the reasons in §3.5. Historically foundational, practically obsolete.
 
-Then **retract** on the manifold, do not add:
+**FastSLAM / RBPF.** Rao-Blackwellization exploits conditional independence: *given the trajectory*, landmarks are independent.
 
-$$\mathbf{X}^{(k+1)} = \mathbf{X}^{(k)} \oplus \delta \quad\text{i.e.}\quad \texttt{Values::retract(delta)}$$
+$$p(\mathbf{x}_{1:t},\mathbf{m}\mid\mathbf{z},\mathbf{u}) = p(\mathbf{x}_{1:t}\mid\mathbf{z},\mathbf{u})\prod_k p(\mathbf{m}_k\mid\mathbf{x}_{1:t},\mathbf{z})$$
 
-Levenberg-Marquardt: $(\boldsymbol{\Lambda} + \lambda\,\mathrm{diag}(\boldsymbol{\Lambda}))\,\delta = \mathbf{A}^\top\mathbf{b}$. Dogleg trades region-trust for step-size control and is often more robust on SLAM problems.
+Particles carry trajectory hypotheses; each particle carries its own map (EKF per landmark, or a full occupancy grid in `gmapping`). GMapping's two contributions: a **scan-matching-improved proposal** (sample around the scan-match optimum, not the odometry prior, which drastically reduces the particles needed) and **adaptive resampling** triggered on effective sample size $N_{\text{eff}} = 1/\sum \tilde{w}_i^2$. The unavoidable weakness is **particle depletion**: resampling discards trajectory diversity, so old parts of the map cannot be corrected.
 
-## 4.3 Sparsity, elimination, and the Bayes tree
+**Graph-based SLAM.** The dominant paradigm. Frontend builds constraints; backend optimizes. Everything in Chapters 1–4 is this.
 
-$\boldsymbol{\Lambda}$ is sparse because each factor touches few variables. Solving = **variable elimination**, which converts the factor graph into a Bayes net (a chordal graph), and grouping its cliques gives the **Bayes tree**.
+**Pose graph optimization** — the reduced form where landmarks have been marginalized into relative pose constraints:
 
-Elimination order determines **fill-in** — how many zeros become non-zeros during factorization. This is a graph-theoretic problem (minimum fill-in is NP-hard), solved heuristically with **COLAMD** or **METIS** nested dissection. On a pose graph the difference between a good and a bad ordering is easily an order of magnitude in solve time.
+$$\min_{\{\mathbf{T}_i\}}\ \sum_{(i,j)\in\mathcal{E}}\left\|\mathrm{Log}\!\left(\tilde{\mathbf{T}}_{ij}^{-1}\,\mathbf{T}_i^{-1}\mathbf{T}_j\right)\right\|^2_{\boldsymbol{\Sigma}_{ij}}$$
 
-**Marginalization** of a variable $\mathbf{x}_m$ is the Schur complement:
+Cheap, scalable, and the standard target for loop closure. The information loss versus full BA is real but usually acceptable.
 
-$$\begin{bmatrix}\boldsymbol{\Lambda}_{mm} & \boldsymbol{\Lambda}_{mr}\\ \boldsymbol{\Lambda}_{rm} & \boldsymbol{\Lambda}_{rr}\end{bmatrix} \;\longrightarrow\; \boldsymbol{\Lambda}_{rr} - \boldsymbol{\Lambda}_{rm}\boldsymbol{\Lambda}_{mm}^{-1}\boldsymbol{\Lambda}_{mr}$$
-
-The result is **dense over the Markov blanket** of the marginalized variable. This is the fundamental cost of fixed-lag smoothing and the reason you marginalize *keyframes*, not every frame: each marginalization permanently densifies the graph. It is also why marginalizing a landmark seen by 50 keyframes creates a 50-clique and is usually a mistake.
-
-## 4.4 iSAM2
-
-Three ideas, all about doing incremental work only:
-
-1. **Incremental factorization.** New factors touch few variables. Identify the affected Bayes-tree cliques, detach that subtree into a factor graph, re-eliminate it with a locally improved ordering, reattach. Untouched parts of the tree are never revisited.
-2. **Fluid relinearization.** Relinearize a variable only when its accumulated linear delta exceeds `relinearizeThreshold`. Most variables far from the current pose never move enough to justify it.
-3. **Partial state update.** Back-substitute only where the delta is significant (`wildfireThreshold`), stopping propagation down branches whose change is negligible.
-
-Net effect: constant-time updates for exploration, and cost proportional to the *affected region* for loop closures — a large loop closure genuinely does cost a lot, and that is correct.
-
-## 4.5 Core GTSAM vocabulary
-
-| Concept | Class |
-|---|---|
-| Graph container | `NonlinearFactorGraph` |
-| Variable assignment | `Values` |
-| Poses | `Pose2`, `Pose3`, `Rot3`, `NavState` ($SE_2(3)$) |
-| IMU bias | `imuBias::ConstantBias` |
-| Preintegration | `PreintegratedImuMeasurements`, `PreintegratedCombinedMeasurements` |
-| IMU factors | `ImuFactor` (5 vars) , `CombinedImuFactor` (6 vars, bias evolution folded in) |
-| Odometry / loop | `BetweenFactor<Pose3>` |
-| Anchoring | `PriorFactor<T>` |
-| GNSS | `GPSFactor`, `GPSFactorArm` |
-| Vision | `GenericProjectionFactor`, `SmartProjectionPoseFactor` |
-| Noise | `noiseModel::{Isotropic,Diagonal,Gaussian,Robust}` |
-| Robust kernels | `noiseModel::mEstimator::{Huber,Cauchy,GemanMcClure,Tukey}` |
-| Optimizers | `LevenbergMarquardtOptimizer`, `DoglegOptimizer`, `ISAM2` |
-| Fixed lag | `IncrementalFixedLagSmoother`, `BatchFixedLagSmoother` |
-| Keys | `Symbol('x', i)` → typed, human-readable indices |
-
-**Smart factors** deserve emphasis: `SmartProjectionPoseFactor` eliminates the landmark on the fly via Schur complement at every linearization, so the landmark never enters `Values` at all. You get the same information as full BA with a state containing only poses. The cost is that the landmark is re-triangulated each iteration, and degenerate configurations (pure rotation, tiny parallax) must be detected and the factor discarded — GTSAM exposes `SmartProjectionParams` with exactly those thresholds.
-
-## 4.6 Pseudocode — a LIO-SAM-shaped graph
-
-This is the canonical structure: IMU preintegration + odometry factors + GNSS + loop closures under iSAM2.
+## 4.3 The canonical modern pipeline
 
 ```
-# --- setup ---
-params = ISAM2Params(relinearizeThreshold=0.1, relinearizeSkip=1)
-isam   = ISAM2(params)
-graph  = NonlinearFactorGraph()
-values = Values()
-
-X = lambda i: Symbol('x', i)   # Pose3
-V = lambda i: Symbol('v', i)   # Vector3 velocity
-B = lambda i: Symbol('b', i)   # imuBias::ConstantBias
-
-# --- anchor the gauge (mandatory: 4-6 DoF are otherwise free) ---
-graph.add(PriorFactor_Pose3(X(0), prior_pose, prior_pose_noise))
-graph.add(PriorFactor_Vector3(V(0), prior_vel,  prior_vel_noise))
-graph.add(PriorFactor_Bias(B(0),    prior_bias, prior_bias_noise))
-values.insert(X(0), prior_pose); values.insert(V(0), prior_vel)
-values.insert(B(0), prior_bias)
-
-pim = PreintegratedCombinedMeasurements(imu_params, prior_bias)
-i = 0
-
-# --- main loop ---
-while running:
-    for (w, a, dt) in imu_since_last_keyframe():
-        pim.integrateMeasurement(a, w, dt)
-
-    if not keyframe_triggered():   continue
-    i += 1
-
-    # 1. IMU factor
-    graph.add(CombinedImuFactor(X(i-1), V(i-1), X(i), V(i), B(i-1), B(i), pim))
-
-    # 2. exteroceptive odometry (scan matching / VO) as a between factor
-    graph.add(BetweenFactor_Pose3(X(i-1), X(i), T_rel, odom_noise))
-
-    # 3. absolute measurements when available
-    if gnss.valid():
-        graph.add(GPSFactor(X(i), gnss.enu, gnss.noise))
-
-    # 4. loop closures  ── robust kernel is NOT optional here
-    for (j, T_loop, fitness) in detect_loop_candidates(i):
-        if fitness < FITNESS_TH:                       # geometric verification
-            n = noiseModel_Robust(
-                    mEstimator_Cauchy(0.1),
-                    noiseModel_Diagonal_Variances(loop_var))
-            graph.add(BetweenFactor_Pose3(X(j), X(i), T_loop, n))
-
-    # 5. initial guess from IMU propagation (NOT identity)
-    pred = pim.predict(NavState(values.at(X(i-1)), values.at(V(i-1))),
-                       values.at(B(i-1)))
-    values.insert(X(i), pred.pose()); values.insert(V(i), pred.velocity())
-    values.insert(B(i), values.at(B(i-1)))
-
-    # 6. incremental solve
-    isam.update(graph, values)
-    isam.update()                      # extra iterations after loop closure
-    result = isam.calculateEstimate()
-
-    # 7. reset for next interval
-    graph.resize(0); values.clear()
-    pim.resetIntegrationAndSetBias(result.at(B(i)))    # ← critical
-
-    publish(result.at(X(i)))
+┌───────────────────────────────────────────────────────────────────────┐
+│                              FRONTEND                                 │
+│                                                                       │
+│  ┌──────────┐  ┌────────────┐  ┌───────────┐  ┌────────────────────┐  │
+│  │ IMU      │  │ Camera     │  │ LiDAR     │  │ Wheel / GNSS       │  │
+│  │ preint.  │  │ features   │  │ deskew +  │  │ odometry, fixes    │  │
+│  │ (Ch.1)   │  │ + tracking │  │ registr.  │  │                    │  │
+│  └────┬─────┘  └─────┬──────┘  └─────┬─────┘  └─────────┬──────────┘  │
+│       └──────────────┴───────────────┴──────────────────┘             │
+│                             │                                         │
+│                   ┌─────────▼──────────┐                              │
+│                   │ ODOMETRY  (VIO/LIO)│  high rate, drifts           │
+│                   └─────────┬──────────┘                              │
+│                             │                                         │
+│                   ┌─────────▼──────────┐                              │
+│                   │ KEYFRAME SELECTION │  motion / time / overlap     │
+│                   └─────────┬──────────┘                              │
+└─────────────────────────────┼─────────────────────────────────────────┘
+                              │
+   ┌──────────────────────────┼──────────────────────────┐
+   │                          ▼                          │
+   │      ┌──────────────────────────────────┐           │
+   │      │  PLACE RECOGNITION               │           │
+   │      │  visual: DBoW2 / NetVLAD         │           │
+   │      │  lidar : Scan Context / M2DP     │           │
+   │      └───────────────┬──────────────────┘           │
+   │                      ▼                              │
+   │      ┌──────────────────────────────────┐           │
+   │      │  GEOMETRIC VERIFICATION          │           │
+   │      │  PnP+RANSAC / ICP fitness gate   │───reject──┘
+   │      └───────────────┬──────────────────┘
+   │                      ▼  accept
+┌──┴───────────────────────────────────────────────────────────────────┐
+│                              BACKEND                                 │
+│   ┌──────────────────────────────────────────────────────────────┐   │
+│   │ FACTOR GRAPH  (iSAM2 / Ceres / g2o)                          │   │
+│   │  odom factors │ IMU factors │ loop factors (robust) │ priors │   │
+│   └──────────────────────────┬───────────────────────────────────┘   │
+└──────────────────────────────┼───────────────────────────────────────┘
+                               ▼
+              ┌──────────────────────────────────┐
+              │  MAP MAINTENANCE                 │
+              │  grid │ OctoMap │ TSDF │ ESDF    │
+              │  dynamic removal, submaps,       │
+              │  memory management (STM/WM/LTM)  │
+              └───────────────┬──────────────────┘
+                              ▼
+                 map → odom → base_link   (REP-105)
+                              │
+                              ▼
+                        Nav2 / planner
 ```
 
-Four failure modes this pseudocode is written to avoid:
+## 4.4 Data association is the crux
 
-- **No prior → rank-deficient system.** The graph has a free gauge; the optimizer will wander or fail.
-- **Identity initial guess.** Gauss-Newton is local. Feeding it IMU-propagated initial values instead of identity is often the difference between converging and not.
-- **Forgetting `resetIntegrationAndSetBias`.** The preintegration must be reset to the *newly optimized* bias, otherwise the next interval integrates against a stale linearization point and the bias estimate oscillates.
-- **Loop closures with a Gaussian noise model.** One false positive with a tight Gaussian will fold the map. Cauchy or Geman-McClure, plus an independent geometric fitness gate, plus ideally **GNC** — graduated non-convexity anneals a convex surrogate toward the true robust cost, so you don't need a good initial guess for the robust problem to work.
+Almost all catastrophic SLAM failures are frontend association failures, not backend optimization failures. The backend's job is to *survive* bad association, not to fix it.
 
-## 4.7 Factor graph, drawn
+- **Nearest neighbour + Mahalanobis gate**: $d^2 = \mathbf{y}^\top\mathbf{S}^{-1}\mathbf{y} < \chi^2_{\alpha,d}$
+- **JCBB** (joint compatibility branch and bound): tests a *set* of associations jointly, which rejects individually-plausible but mutually-inconsistent matches. Exponential worst case, but the branch-and-bound prunes hard in practice.
+- **RANSAC** with a minimal solver (P3P, 3-point Kabsch) — the workhorse.
+- **Robust backends**: switchable constraints, dynamic covariance scaling, max-mixtures, GNC.
+- **Perceptual aliasing** is the enemy: two identical corridors, two identical warehouse aisles. Global descriptors alone cannot resolve it. The defenses are geometric verification, temporal/odometry consistency, and never trusting a single closure.
 
-```
-   [prior]
-      │
-      ▼
-    (x₀)══[IMU]══(x₁)══[IMU]══(x₂)══[IMU]══(x₃)
-     ║ ╲          ║ ╲          ║            ║
-   (v₀) ╲       (v₁) ╲       (v₂)         (v₃)
-     ║    ╲       ║    ╲       ║            ║
-   (b₀)──[bias RW]──(b₁)──[bias RW]──(b₂)──(b₃)
-            ╲        │        ╱  ╲          │
-             ╲    [proj]     ╱    [proj]  [GPS]
-              ╲     │       ╱       │
-               ╲──►(X_j)◄──╱      (X_k)
-                  landmark        landmark
+## 4.5 Map representations
 
-           ╔══════════════════════════════════╗
-           ║ (x₃)══════[loop, robust]══════(x₀)║
-           ╚══════════════════════════════════╝
+| Representation | Query it answers | Cost | Use |
+|---|---|---|---|
+| 2D occupancy grid | occupied/free/unknown | $O(A)$ | Nav2 static layer, AMCL |
+| OctoMap | 3D occupancy, multi-res | log-odds, sparse | 3D collision |
+| Point cloud / submaps | raw geometry | large | LiDAR SLAM maps |
+| Surfel | oriented surface patches | medium | SuMa, dense VO |
+| TSDF | signed distance near surfaces | voxel hashing | reconstruction |
+| **ESDF** | **distance + gradient anywhere** | expensive | **planning, manipulation** |
+| Topological / semantic | connectivity, objects | tiny | task planning |
 
-  ( ) variable node      [ ] factor node      ══ constraint
-```
+**ESDF is the one that connects SLAM to manipulation.** Occupancy answers "is this cell blocked"; an ESDF answers "how far is the nearest obstacle and in which direction" — which is exactly the query an optimization-based arm planner (CHOMP, TrajOpt) or a whole-body MPC needs, since it wants a gradient to push against. Voxblox and FIESTA are the CPU implementations; **nvblox** is NVIDIA's GPU version, and it feeds a Nav2 costmap layer directly.
 
-Read the structure: poses form a chain (IMU + odometry), landmarks create the fill-in that makes BA expensive, biases form their own random-walk chain, GPS and priors are unary, and the loop closure is the single edge that turns an open chain into a cycle — which is exactly why it both fixes drift and is dangerous when wrong.
+Log-odds occupancy update, for completeness:
+
+$$L(m_i\mid z_{1:t}) = L(m_i\mid z_{1:t-1}) + L(m_i\mid z_t) - L(m_i)$$
+
+Additive in log-odds, which is why occupancy grids are cheap — and why an unclamped log-odds value saturates and stops responding to new evidence, the classic reason a map won't forget a person who walked through it. Clamping is what makes forgetting possible.
+
+## 4.6 Dynamic and lifelong operation
+
+The posting-relevant part: a robot navigating around people cannot bake people into its map.
+
+**Removal strategies:** semantic masking of dynamic classes before registration (DynaSLAM-style); visibility-based removal (Removert — a point currently visible through free space cannot be occupied); ground-aware removal (ERASOR); or simply relying on ray-cast free-space updates with properly clamped log-odds.
+
+**Lifelong SLAM:** the map must change without unbounded growth. Techniques: submap-based maps so a region can be re-optimized in isolation; change detection and map versioning; multi-session merging (Atlas-style); and explicit memory management. **RTAB-Map's STM/WM/LTM scheme** is the well-known instance — working memory is bounded by a time budget, locations are transferred to long-term memory by a weighting heuristic and retrieved when a nearby candidate appears, so loop-closure search cost stays bounded regardless of map size.
+
+**Degeneracy handling** (Zhang & Singh): eigen-decompose the scan-matching information matrix $\mathbf{J}^\top\mathbf{J}$; eigenvalues below a threshold indicate unobservable directions (corridor axis, open plane). **Solution remapping** projects the update onto the well-constrained subspace only and lets IMU/wheel odometry carry the rest. This is the principled answer to "what happens in a long empty hallway," and it generalizes: the same eigen-analysis detects a featureless wall in VIO.
+
+## 4.7 Evaluation
+
+**ATE** — global consistency. Align estimated and ground-truth trajectories with $SE(3)$ (or $Sim(3)$ for monocular) via Umeyama, then:
+
+$$\mathrm{ATE}_{\text{RMSE}} = \sqrt{\frac{1}{N}\sum_i\|\mathbf{t}_i^{\text{est,aligned}} - \mathbf{t}_i^{\text{gt}}\|^2}$$
+
+**RPE** — local drift, over a fixed interval $\Delta$:
+
+$$\mathbf{E}_i = \left(\mathbf{T}_i^{\text{gt},-1}\mathbf{T}_{i+\Delta}^{\text{gt}}\right)^{-1}\left(\mathbf{T}_i^{\text{est},-1}\mathbf{T}_{i+\Delta}^{\text{est}}\right)$$
+
+Use `evo` for both. Report **both**: a system with excellent ATE and poor RPE is loop-closing its way out of bad odometry, which looks great on a plot and feels terrible to a controller, because the controller consumes the *local* estimate. This distinction is worth stating explicitly in an interview — it shows you evaluate estimators for their consumer, not for the benchmark.
+
+**Consistency:** NEES needs ground truth (free in Isaac Sim), so use it in simulation; NIS is computable online from innovations, so use it on hardware. A filter whose average NEES sits well above its state dimension is overconfident — and overconfidence is the dangerous direction, because everything downstream believes the covariance.
+
+## 4.8 Failure taxonomy
+
+| Failure | Root cause | Mitigation |
+|---|---|---|
+| Scale drift (mono) | No metric reference | IMU, stereo, wheel odom, known-size markers |
+| Tracking loss | Motion blur, low texture, occlusion | Relocalization, multi-camera, IMU dead reckoning, Atlas |
+| Wrong loop closure | Perceptual aliasing | Geometric verification, robust kernels, GNC, odometry consistency |
+| Filter overconfidence | Spurious information gain | FEJ / OC-EKF, or use a smoother |
+| Degeneracy | Corridor, plane, tunnel | Eigen-analysis + solution remapping |
+| Map corruption by dynamics | People in the map | Semantic masking, visibility removal, clamped log-odds |
+| `map→odom` jump | Discrete global correction | Two-layer TF (REP-105), smooth the correction, never step the controller |
+| Time-sync error | Software timestamps | Hardware trigger, exposure-midpoint stamps, online $t_d$ estimation |
+| Extrinsic drift | Compliant mounts, thermal | Rigid mounts first; online calibration only if observable |
+
+## 4.9 The five sentences to be able to say
+
+1. *"SLAM is MAP inference over a factor graph; every system is a different approximation — filtering marginalizes the past, smoothing keeps it, and the choice is a compute-versus-accuracy decision, not a philosophical one."*
+2. *"IMU preintegration exists so that relinearizing a pose doesn't force re-integration of the inertial stream, and the bias Jacobians exist so that changing the bias estimate doesn't either."*
+3. *"An error-state formulation is not an optimization — it is the only correct way to put a rotation's uncertainty in a covariance matrix, because uncertainty lives in the tangent space."*
+4. *"Production estimators are 20% filter and 80% delay compensation, sensor arbitration, gating, and reset logic — which is what reading PX4's EKF2 or ArduPilot's EKF3 actually teaches you."*
+5. *"The dangerous failure is not an inaccurate estimate but an overconfident one, because the planner and controller believe the covariance."*

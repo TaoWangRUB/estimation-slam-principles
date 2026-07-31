@@ -1,206 +1,173 @@
-# Chapter 2 — EKF/INS: PX4 EKF2 and ArduPilot EKF3
+# Chapter 2 — GTSAM and Factor Graphs
 
-Both descend from Paul Riseborough's ECL work. Both are 24-element-state, error-state, delay-compensated EKFs. They differ mainly in redundancy management and sensor-source abstraction. Reading either source tree is the fastest way to understand what production INS actually requires beyond the textbook filter.
+## 2.1 The formulation
 
-## 2.1 Generic EKF, and why it's not enough
+A factor graph is a bipartite graph: **variable nodes** $\mathbf{X} = \{\mathbf{x}_1,\dots,\mathbf{x}_n\}$ and **factor nodes** $\{\phi_i\}$, where each factor connects the subset of variables it constrains.
 
-Prediction and update:
+$$p(\mathbf{X}\mid\mathbf{Z}) \propto \prod_i \phi_i(\mathbf{X}_i)$$
 
-$$\hat{\mathbf{x}}_{k|k-1} = f(\hat{\mathbf{x}}_{k-1}, \mathbf{u}_k), \qquad \mathbf{P}_{k|k-1} = \mathbf{F}\mathbf{P}_{k-1}\mathbf{F}^\top + \mathbf{Q}$$
+With Gaussian noise, $\phi_i(\mathbf{X}_i) = \exp\!\left(-\tfrac{1}{2}\|h_i(\mathbf{X}_i) - \mathbf{z}_i\|^2_{\boldsymbol{\Sigma}_i}\right)$, so MAP inference becomes nonlinear least squares:
 
-$$\mathbf{y} = \mathbf{z} - h(\hat{\mathbf{x}}), \quad \mathbf{S} = \mathbf{H}\mathbf{P}\mathbf{H}^\top + \mathbf{R}, \quad \mathbf{K} = \mathbf{P}\mathbf{H}^\top\mathbf{S}^{-1}$$
+$$\mathbf{X}^\star = \arg\min_\mathbf{X}\ \sum_i \left\|h_i(\mathbf{X}_i) - \mathbf{z}_i\right\|^2_{\boldsymbol{\Sigma}_i}$$
 
-$$\hat{\mathbf{x}}^+ = \hat{\mathbf{x}} \oplus \mathbf{K}\mathbf{y}, \qquad \mathbf{P}^+ = (\mathbf{I}-\mathbf{K}\mathbf{H})\mathbf{P}$$
+**Whitening.** Absorb $\boldsymbol{\Sigma}^{-1/2}$ (Cholesky) into the residual so every factor becomes unit-covariance and the problem is a plain $\|\cdot\|_2$ minimization. GTSAM does this internally; it is why `noiseModel::Diagonal::Sigmas` and `::Variances` are different functions and mixing them up silently mis-weights your graph by a square.
 
-Note $\oplus$, not $+$ — the state lives on a manifold.
+## 2.2 Linearization and solution
 
-The textbook stops here. Production needs: delay compensation, sequential scalar fusion, innovation gating, covariance conditioning, sensor arbitration, reset logic, and an output predictor. That's the actual content of the next sections.
+Linearize at $\mathbf{X}^{(k)}$, in the **tangent space**:
 
-## 2.2 Error-state formulation
+$$\mathbf{A}\,\delta = \mathbf{b}, \qquad \mathbf{A} = \begin{bmatrix}\boldsymbol{\Sigma}_1^{-1/2}\mathbf{J}_1\\ \vdots\end{bmatrix},\quad \mathbf{b} = \begin{bmatrix}\boldsymbol{\Sigma}_1^{-1/2}(\mathbf{z}_1 - h_1(\mathbf{X}^{(k)}))\\ \vdots\end{bmatrix}$$
 
-Split $\mathbf{x} = \hat{\mathbf{x}} \oplus \delta\mathbf{x}$: a **nominal state** integrated with full nonlinearity and no noise, and an **error state** which is small, zero-mean, and carries the covariance.
+Normal equations: $\mathbf{A}^\top\mathbf{A}\,\delta = \mathbf{A}^\top\mathbf{b}$, where $\boldsymbol{\Lambda} = \mathbf{A}^\top\mathbf{A}$ is the **information matrix**. Solve by sparse Cholesky ($\boldsymbol{\Lambda} = \mathbf{R}^\top\mathbf{R}$) or QR on $\mathbf{A}$ directly (better conditioned — $\kappa(\mathbf{A}^\top\mathbf{A}) = \kappa(\mathbf{A})^2$).
 
-Why:
+Then **retract** on the manifold, do not add:
 
-1. The rotation error is a minimal 3-vector in $\mathfrak{so}(3)$, so $\mathbf{P}$ is non-singular and correctly interpreted as uncertainty on the tangent space of $SO(3)$.
-2. The error is small by construction, so linearization is valid — while the nominal state is arbitrarily large.
-3. Jacobians become simple and slowly varying.
-4. Rate separation: nominal integrates at IMU rate; covariance propagates at a lower rate.
+$$\mathbf{X}^{(k+1)} = \mathbf{X}^{(k)} \oplus \delta \quad\text{i.e.}\quad \texttt{Values::retract(delta)}$$
 
-PX4 confirms exactly this design: the full state vector has **24 elements** while the error state has **23**, because the quaternion contributes 4 elements but only 3 degrees of freedom, and PX4's docs state the error-state formulation exists specifically to describe rotational uncertainty on the tangent space of $SO(3)$ rather than as a 4-D vector. PX4 also derives the covariance prediction and measurement Jacobians symbolically with **SymForce** and generates C, and uses the **Joseph stabilized form** for the covariance update.
+Levenberg-Marquardt: $(\boldsymbol{\Lambda} + \lambda\,\mathrm{diag}(\boldsymbol{\Lambda}))\,\delta = \mathbf{A}^\top\mathbf{b}$. Dogleg trades region-trust for step-size control and is often more robust on SLAM problems.
 
-**The injection + reset step, which candidates routinely forget:**
+## 2.3 Sparsity, elimination, and the Bayes tree
 
-$$\hat{\mathbf{q}} \leftarrow \hat{\mathbf{q}} \otimes \begin{bmatrix}1\\ \tfrac{1}{2}\delta\boldsymbol{\theta}\end{bmatrix}, \quad \hat{\mathbf{p}} \leftarrow \hat{\mathbf{p}} + \delta\mathbf{p}, \quad \dots$$
+$\boldsymbol{\Lambda}$ is sparse because each factor touches few variables. Solving = **variable elimination**, which converts the factor graph into a Bayes net (a chordal graph), and grouping its cliques gives the **Bayes tree**.
 
-$$\delta\mathbf{x} \leftarrow \mathbf{0}, \qquad \mathbf{P} \leftarrow \mathbf{G}\mathbf{P}\mathbf{G}^\top, \quad \mathbf{G} = \mathrm{blkdiag}(\dots,\ \mathbf{I} - \lfloor\tfrac{1}{2}\delta\hat{\boldsymbol{\theta}}\rfloor_\times,\ \dots)$$
+Elimination order determines **fill-in** — how many zeros become non-zeros during factorization. This is a graph-theoretic problem (minimum fill-in is NP-hard), solved heuristically with **COLAMD** or **METIS** nested dissection. On a pose graph the difference between a good and a bad ordering is easily an order of magnitude in solve time.
 
-The reset Jacobian $\mathbf{G}$ accounts for the fact that the tangent space has moved. Omitting it is a second-order error — usually survivable, occasionally the reason your yaw covariance is subtly wrong.
+**Marginalization** of a variable $\mathbf{x}_m$ is the Schur complement:
 
-## 2.3 PX4 EKF2 — state and structure
+$$\begin{bmatrix}\boldsymbol{\Lambda}_{mm} & \boldsymbol{\Lambda}_{mr}\\ \boldsymbol{\Lambda}_{rm} & \boldsymbol{\Lambda}_{rr}\end{bmatrix} \;\longrightarrow\; \boldsymbol{\Lambda}_{rr} - \boldsymbol{\Lambda}_{rm}\boldsymbol{\Lambda}_{mm}^{-1}\boldsymbol{\Lambda}_{mr}$$
 
-24-element state / 23-dim error state:
+The result is **dense over the Markov blanket** of the marginalized variable. This is the fundamental cost of fixed-lag smoothing and the reason you marginalize *keyframes*, not every frame: each marginalization permanently densifies the graph. It is also why marginalizing a landmark seen by 50 keyframes creates a 50-clique and is usually a mistake.
 
-| Block | Dim (full / error) | Notes |
-|---|---|---|
-| Quaternion $\mathbf{q}_{nb}$ | 4 / 3 | NED → body |
-| Velocity NED | 3 / 3 | |
-| Position NED | 3 / 3 | modern PX4 integrates position on the WGS84 ellipsoid (lat/lon/alt) |
-| Delta-angle bias | 3 / 3 | units of **rad**, not rad/s |
-| Delta-velocity bias | 3 / 3 | units of **m/s** |
-| Earth magnetic field NED | 3 / 3 | |
-| Body magnetic bias | 3 / 3 | |
-| Wind velocity NE | 2 / 2 | |
+## 2.4 iSAM2
 
-Plus a **separate 1-state terrain height estimator** (also present in ArduPilot), and an **EKF-GSF yaw estimator** — a bank of EKFs over yaw hypotheses that recovers heading without a magnetometer once there is horizontal acceleration.
+Three ideas, all about doing incremental work only:
 
-**Delta-angle / delta-velocity form.** IMU samples are integrated into $\Delta\boldsymbol{\theta}_k$ and $\Delta\mathbf{v}_k$ before entering the filter (coning/sculling compensation applied here). Then:
+1. **Incremental factorization.** New factors touch few variables. Identify the affected Bayes-tree cliques, detach that subtree into a factor graph, re-eliminate it with a locally improved ordering, reattach. Untouched parts of the tree are never revisited.
+2. **Fluid relinearization.** Relinearize a variable only when its accumulated linear delta exceeds `relinearizeThreshold`. Most variables far from the current pose never move enough to justify it.
+3. **Partial state update.** Back-substitute only where the delta is significant (`wildfireThreshold`), stopping propagation down branches whose change is negligible.
 
-$$\mathbf{q}_{k+1} = \mathbf{q}_k \otimes \mathrm{Exp}(\Delta\boldsymbol{\theta}_k - \mathbf{b}_\theta)$$
+Net effect: constant-time updates for exploration, and cost proportional to the *affected region* for loop closures — a large loop closure genuinely does cost a lot, and that is correct.
 
-$$\mathbf{v}_{k+1} = \mathbf{v}_k + \mathbf{R}_k(\Delta\mathbf{v}_k - \mathbf{b}_v) + \mathbf{g}\Delta t$$
+## 2.5 Core GTSAM vocabulary
 
-$$\mathbf{p}_{k+1} = \mathbf{p}_k + \mathbf{v}_k\Delta t + \tfrac{1}{2}\left[\mathbf{R}_k(\Delta\mathbf{v}_k-\mathbf{b}_v)+\mathbf{g}\Delta t\right]\Delta t$$
+| Concept | Class |
+|---|---|
+| Graph container | `NonlinearFactorGraph` |
+| Variable assignment | `Values` |
+| Poses | `Pose2`, `Pose3`, `Rot3`, `NavState` ($SE_2(3)$) |
+| IMU bias | `imuBias::ConstantBias` |
+| Preintegration | `PreintegratedImuMeasurements`, `PreintegratedCombinedMeasurements` |
+| IMU factors | `ImuFactor` (5 vars) , `CombinedImuFactor` (6 vars, bias evolution folded in) — built from [Chapter 1](chapter-1.md) |
+| Odometry / loop | `BetweenFactor<Pose3>` |
+| Anchoring | `PriorFactor<T>` |
+| GNSS | `GPSFactor`, `GPSFactorArm` |
+| Vision | `GenericProjectionFactor`, `SmartProjectionPoseFactor` |
+| Noise | `noiseModel::{Isotropic,Diagonal,Gaussian,Robust}` |
+| Robust kernels | `noiseModel::mEstimator::{Huber,Cauchy,GemanMcClure,Tukey}` |
+| Optimizers | `LevenbergMarquardtOptimizer`, `DoglegOptimizer`, `ISAM2` |
+| Fixed lag | `IncrementalFixedLagSmoother`, `BatchFixedLagSmoother` |
+| Keys | `Symbol('x', i)` → typed, human-readable indices |
 
-Biases on the *integrated* quantities, so they scale with $\Delta t$ implicitly — this is why the parameters are in rad and m/s rather than rates. **The IMU is an input, not a measurement.** PX4's docs are explicit: IMU data is used for state prediction only and never appears as an observation. Every candidate who says "the EKF fuses IMU with GPS" has this backwards, and it matters — it's why there is no IMU $\mathbf{H}$ matrix anywhere in the codebase.
+**Smart factors** deserve emphasis: `SmartProjectionPoseFactor` eliminates the landmark on the fly via Schur complement at every linearization, so the landmark never enters `Values` at all. You get the same information as full BA with a state containing only poses. The cost is that the landmark is re-triangulated each iteration, and degenerate configurations (pure rotation, tiny parallax) must be detected and the factor discarded — GTSAM exposes `SmartProjectionParams` with exactly those thresholds.
 
-## 2.4 The delayed fusion time horizon — the key architectural idea
+## 2.6 Pseudocode — a LIO-SAM-shaped graph
 
-Different sensors have different latencies: IMU ~1 ms, baro ~10 ms, GPS 100–200 ms, vision 30–100 ms. Fusing a 150-ms-old GPS fix against a *current* state is simply wrong — you are correcting the present with information about the past.
-
-PX4's solution: **run the EKF at a delayed "fusion time horizon"**, later than the longest sensor delay. Each sensor gets a FIFO ring buffer with a configured delay (`EKF2_*_DELAY`), and data is retrieved from the buffer at the correct time. Then a **complementary filter propagates the delayed state forward to current time** using the buffered IMU data. ArduPilot EKF3 uses the same output-predictor pattern.
-
-```
- t-200ms        t-100ms          t-Δfusion              t (now)
-    │              │                  │                    │
- [GPS ring buf]────┼──────────┐       │                    │
- [Baro ring buf]───┼───┐      │       │                    │
- [Mag ring buf]────┼─┐ │      │       │                    │
- [Vision buf]──────┼┐│ │      │       │                    │
- [IMU ring buf]────┼┼┼─┼──────┼───────┼────────────────────┤
-                   ▼▼▼ ▼      ▼       │                    │
-              ┌────────────────────────┐                   │
-              │   EKF @ fusion horizon │                   │
-              │   (predict + fuse)     │                   │
-              └───────────┬────────────┘                   │
-                          │ state @ t-Δfusion              │
-                          ▼                                │
-              ┌────────────────────────────────────────────┤
-              │ Output predictor (complementary filter)    │
-              │ integrate buffered IMU forward             │
-              │ + smoothly wash out state corrections      │
-              └───────────────────┬────────────────────────┘
-                                  ▼
-                        state @ t  ──►  attitude/position controller
-```
-
-The "smoothly wash out corrections" part matters as much as the propagation: when the EKF applies a correction at the fusion horizon, the output predictor must not step the controller's reference. It applies the delta over a time constant instead. This is precisely the same problem as a `map→odom` jump in ROS 2 disturbing a Nav2 controller.
-
-## 2.5 Sequential fusion
-
-Rather than one $m$-dimensional update, fuse measurements **one scalar at a time**:
-
-$$S = \mathbf{H}\mathbf{P}\mathbf{H}^\top + R \quad(\text{scalar}), \qquad \mathbf{K} = \frac{\mathbf{P}\mathbf{H}^\top}{S}, \qquad \delta\mathbf{x} = \mathbf{K}\,y$$
-
-No matrix inversion — a scalar divide. For a 3-axis magnetometer this is three rank-1 updates instead of one 3×3 inversion. It also allows **per-axis rejection**: a bad magnetometer X axis doesn't poison Y and Z. The cost is a mild approximation when measurement noise is correlated across axes, which for these sensors it essentially isn't.
-
-The Jacobians $\mathbf{H}$ are derived symbolically (SymForce in PX4) and code-generated with sparsity exploited — most entries are structurally zero and are never computed. Reading the generated `derivation.py` output is the single most instructive thing in that codebase.
-
-## 2.6 Innovation gating and health
-
-Normalized innovation squared, per measurement:
-
-$$\text{test ratio} = \frac{y^2}{\gamma^2 \cdot S} < 1$$
-
-with $\gamma$ the per-sensor gate (`EKF2_GPS_P_GATE`, `EKF2_HGT_INNOV_GATE`, …). Failing the gate → reject. Failing *persistently* → declare the aid source unhealthy → reset the relevant states to that source, or fall back to another source.
-
-Logging these test ratios is how you debug a real estimator. A test ratio that sits at 0.9 is telling you the sensor is barely passing and your $R$ is optimistic; a ratio that spikes at every turn is telling you about an unmodelled lever arm.
-
-**Covariance conditioning**, every step:
-
-- Force symmetry: $\mathbf{P} \leftarrow \tfrac{1}{2}(\mathbf{P}+\mathbf{P}^\top)$
-- Clamp diagonals to $[\sigma^2_{\min}, \sigma^2_{\max}]$
-- Reject negative variances (numerical failure indicator)
-- Joseph form $\mathbf{P}^+ = (\mathbf{I}-\mathbf{KH})\mathbf{P}(\mathbf{I}-\mathbf{KH})^\top + \mathbf{KRK}^\top$ for stability
-
-## 2.7 ArduPilot EKF3 — what it adds
-
-Same 24-state core. The differences are systems engineering:
-
-**Multiple cores / lane switching.** EKF3 runs one independent filter instance ("lane") per IMU. `EK3_AFFINITY` is a bitmask selecting which sensor types get per-lane affinity (lane 1 → sensor 1, lane 2 → sensor 2, …). Lane errors accumulate relative to the active primary lane, and `EK3_ERR_THRESH` sets how much better a non-primary lane must score before a switch occurs — lower means more aggressive switching. ArduPilot's own docs warn that misconfiguring this can lose the vehicle.
-
-This is a genuine fault-tolerance architecture: N-modular redundancy with a comparator and a voter, at the estimator level. If you have a functional-safety background, this is the natural bridge — it is a fail-operational design, and the lane-error score is the diagnostic.
-
-**Source sets.** `EK3_SRCn_POSXY / VELXY / POSZ / VELZ / YAW` for $n \in \{1,2,3\}$ define complete sensor-source configurations (GPS / Beacon / ExternalNav / OpticalFlow / WheelEncoder / …), switchable at runtime via RC channel, Lua script, or MAVLink. This is the clean solution to indoor/outdoor transitions: not a pile of conditionals, but a declared configuration set with explicit reset semantics on switch.
-
-The failure mode is instructive too: source switching triggers a state reset, and if the reset picks the wrong reference the vehicle jumps. Transition logic between position sources is where the real complexity lives, not in the filter maths.
+This is the canonical structure: IMU preintegration + odometry factors + GNSS + loop closures under iSAM2.
 
 ```
-        ┌── IMU1 ──► EKF3 core 0 ─┐
-        │                          │
-        ├── IMU2 ──► EKF3 core 1 ─┤──► lane selector ──► AHRS ──► controllers
-        │                          │    (error score,
-        └── IMU3 ──► EKF3 core 2 ─┘     EK3_ERR_THRESH)
-                        ▲
-                        │
-        ┌───────────────┴──────────────────┐
-        │ Source set (EK3_SRCn_*)          │
-        │  POSXY / VELXY / POSZ / VELZ/YAW │
-        │  GPS │ Beacon │ ExtNav │ Flow    │
-        └──────────────────────────────────┘
-                        +
-        ┌──────────────────────────────────┐
-        │ EKF-GSF yaw estimator (mag-free) │
-        │ 1-state terrain height estimator │
-        └──────────────────────────────────┘
+# --- setup ---
+params = ISAM2Params(relinearizeThreshold=0.1, relinearizeSkip=1)
+isam   = ISAM2(params)
+graph  = NonlinearFactorGraph()
+values = Values()
+
+X = lambda i: Symbol('x', i)   # Pose3
+V = lambda i: Symbol('v', i)   # Vector3 velocity
+B = lambda i: Symbol('b', i)   # imuBias::ConstantBias
+
+# --- anchor the gauge (mandatory: 4-6 DoF are otherwise free) ---
+graph.add(PriorFactor_Pose3(X(0), prior_pose, prior_pose_noise))
+graph.add(PriorFactor_Vector3(V(0), prior_vel,  prior_vel_noise))
+graph.add(PriorFactor_Bias(B(0),    prior_bias, prior_bias_noise))
+values.insert(X(0), prior_pose); values.insert(V(0), prior_vel)
+values.insert(B(0), prior_bias)
+
+pim = PreintegratedCombinedMeasurements(imu_params, prior_bias)
+i = 0
+
+# --- main loop ---
+while running:
+    for (w, a, dt) in imu_since_last_keyframe():
+        pim.integrateMeasurement(a, w, dt)
+
+    if not keyframe_triggered():   continue
+    i += 1
+
+    # 1. IMU factor
+    graph.add(CombinedImuFactor(X(i-1), V(i-1), X(i), V(i), B(i-1), B(i), pim))
+
+    # 2. exteroceptive odometry (scan matching / VO) as a between factor
+    graph.add(BetweenFactor_Pose3(X(i-1), X(i), T_rel, odom_noise))
+
+    # 3. absolute measurements when available
+    if gnss.valid():
+        graph.add(GPSFactor(X(i), gnss.enu, gnss.noise))
+
+    # 4. loop closures  ── robust kernel is NOT optional here
+    for (j, T_loop, fitness) in detect_loop_candidates(i):
+        if fitness < FITNESS_TH:                       # geometric verification
+            n = noiseModel_Robust(
+                    mEstimator_Cauchy(0.1),
+                    noiseModel_Diagonal_Variances(loop_var))
+            graph.add(BetweenFactor_Pose3(X(j), X(i), T_loop, n))
+
+    # 5. initial guess from IMU propagation (NOT identity)
+    pred = pim.predict(NavState(values.at(X(i-1)), values.at(V(i-1))),
+                       values.at(B(i-1)))
+    values.insert(X(i), pred.pose()); values.insert(V(i), pred.velocity())
+    values.insert(B(i), values.at(B(i-1)))
+
+    # 6. incremental solve
+    isam.update(graph, values)
+    isam.update()                      # extra iterations after loop closure
+    result = isam.calculateEstimate()
+
+    # 7. reset for next interval
+    graph.resize(0); values.clear()
+    pim.resetIntegrationAndSetBias(result.at(B(i)))    # ← critical
+
+    publish(result.at(X(i)))
 ```
 
-## 2.8 Pseudocode — the real loop
+Four failure modes this pseudocode is written to avoid:
+
+- **No prior → rank-deficient system.** The graph has a free gauge; the optimizer will wander or fail.
+- **Identity initial guess.** Gauss-Newton is local. Feeding it IMU-propagated initial values instead of identity is often the difference between converging and not.
+- **Forgetting `resetIntegrationAndSetBias`.** The preintegration must be reset to the *newly optimized* bias, otherwise the next interval integrates against a stale linearization point and the bias estimate oscillates.
+- **Loop closures with a Gaussian noise model.** One false positive with a tight Gaussian will fold the map. Cauchy or Geman-McClure, plus an independent geometric fitness gate, plus ideally **GNC** — graduated non-convexity anneals a convex surrogate toward the true robust cost, so you don't need a good initial guess for the robust problem to work.
+
+## 2.7 Factor graph, drawn
 
 ```
-loop @ IMU rate:
-    imu = read_imu()
-    imu_buffer.push(imu, t_now)
+   [prior]
+      │
+      ▼
+    (x₀)══[IMU]══(x₁)══[IMU]══(x₂)══[IMU]══(x₃)
+     ║ ╲          ║ ╲          ║            ║
+   (v₀) ╲       (v₁) ╲       (v₂)         (v₃)
+     ║    ╲       ║    ╲       ║            ║
+   (b₀)──[bias RW]──(b₁)──[bias RW]──(b₂)──(b₃)
+            ╲        │        ╱  ╲          │
+             ╲    [proj]     ╱    [proj]  [GPS]
+              ╲     │       ╱       │
+               ╲──►(X_j)◄──╱      (X_k)
+                  landmark        landmark
 
-    # coning/sculling → delta angle & delta velocity
-    (dTheta, dVel) = downsample_and_correct(imu)
+           ╔══════════════════════════════════╗
+           ║ (x₃)══════[loop, robust]══════(x₀)║
+           ╚══════════════════════════════════╝
 
-    if time_to_run_fusion_horizon():
-        t_fuse = t_now - FUSION_HORIZON_DELAY
-        imu_d  = imu_buffer.pop_at(t_fuse)
-
-        # --- prediction (nominal + covariance) ---
-        predict_nominal_state(imu_d)          # quaternion/vel/pos
-        predict_covariance(imu_d)             # P = F P F' + Q, symbolic F
-
-        # --- fusion, sequentially, only what is due ---
-        for src in [gps, baro, mag, rangefinder, flow, ext_vision, airspeed]:
-            if src.buffer.has_data_at(t_fuse) and src.is_healthy():
-                for axis in src.axes:                # scalar-at-a-time
-                    (y, H) = src.innovation_and_jacobian(axis, nominal)
-                    S = H @ P @ H.T + src.R[axis]
-                    if y*y > src.gate**2 * S:
-                        src.reject_count += 1
-                        continue
-                    K = (P @ H.T) / S
-                    dx = K * y
-                    inject_and_reset(nominal, dx, P)   # ⊕ then P ← G P G'
-                    P = joseph_update(P, K, H, src.R[axis])
-                if src.reject_count > LIMIT:
-                    reset_states_to(src)  or  fallback_source()
-
-        condition_covariance(P)               # symmetry, clamp, positivity
-
-    # --- output predictor, every cycle ---
-    state_now = complementary_filter_propagate(state_at_horizon,
-                                               imu_buffer.since(t_fuse))
-    publish(state_now)
+  ( ) variable node      [ ] factor node      ══ constraint
 ```
 
-## 2.9 What to take from this into a ground-robot context
-
-- The **delayed-horizon + output-predictor** split is the right answer whenever you have heterogeneous sensor latency. `robot_localization` does *not* do this properly, which is a real limitation worth naming.
-- **Sequential scalar fusion** is worth adopting for cheap embedded targets.
-- **Test ratios logged per sensor** should be your primary estimator debugging tool.
-- **Lane/source arbitration** is the production answer to "what happens when a sensor fails," and it's an architecture question, not a filter question.
-- Both stacks put **IMU as input, never as observation.** Keep that distinction crisp.
+Read the structure: poses form a chain (IMU + odometry), landmarks create the fill-in that makes BA expensive, biases form their own random-walk chain, GPS and priors are unary, and the loop closure is the single edge that turns an open chain into a cycle — which is exactly why it both fixes drift and is dangerous when wrong.

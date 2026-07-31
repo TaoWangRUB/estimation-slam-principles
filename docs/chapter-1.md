@@ -5,7 +5,7 @@
 
 ## 1.1 Sensor model
 
-World frame here is any inertial frame with gravity $\mathbf{g}$ (a vector, e.g. $[0,0,-9.81]^\top$ in ENU). This rests on a **static world assumption** that is worth stating out loud, because it is what separates this from classical strapdown INS: the Earth's rotation is neglected, $\mathbf{g}$ is taken constant in both magnitude and direction, and the world frame — normally the local-level frame at initialization — is treated as inertial. For MEMS-grade sensors over SLAM-scale distances and durations this is sound, since a MEMS gyro cannot observe Earth rate anyway. On a navigation-grade IMU, or over hundreds of kilometres, it is not, and you need the Coriolis and gravity-model terms that PX4 and ArduPilot carry in Chapter 2.
+World frame here is any inertial frame with gravity $\mathbf{g}$ (a vector, e.g. $[0,0,-9.81]^\top$ in ENU). This rests on a **static world assumption** that is worth stating out loud, because it is what separates this from classical strapdown INS: the Earth's rotation is neglected, $\mathbf{g}$ is taken constant in both magnitude and direction, and the world frame — normally the local-level frame at initialization — is treated as inertial. For MEMS-grade sensors over SLAM-scale distances and durations this is sound, since a MEMS gyro cannot observe Earth rate anyway. On a navigation-grade IMU, or over hundreds of kilometres, it is not, and you need the Coriolis and gravity-model terms that PX4 and ArduPilot carry in Chapter 5.
 
 The IMU measures **specific force** — not acceleration — and angular rate in the body frame:
 
@@ -389,4 +389,28 @@ Two implementation notes that cost people days:
             └───────────────────────────────────────┘
 ```
 
-The right-hand path is essential and often forgotten: the optimizer produces a state at the *last keyframe*, which is 50–100 ms stale. The controller needs a state *now*. You forward-propagate the raw IMU from the optimized keyframe state. This is exactly the same architectural idea as PX4's output predictor in Chapter 2.
+The right-hand path is essential and often forgotten: the optimizer produces a state at the *last keyframe*, which is 50–100 ms stale. The controller needs a state *now*. You forward-propagate the raw IMU from the optimized keyframe state. This is exactly the same architectural idea as PX4's output predictor in Chapter 5.
+
+## 1.10 Where this factor goes next
+
+Preintegration is not a destination — it is a manufacturing step. What §1.8 produces is a self-contained bundle:
+
+```
+   ΔR̃_ij, Δṽ_ij, Δp̃_ij     the measurement (mean)
+   Σ_ij                      its covariance  → becomes the factor's weight
+   ∂Δ/∂b (five Jacobians)    lets the measurement follow the bias estimate
+   b̄, Δt_ij                  the linearization point it was built at
+```
+
+Every downstream chapter consumes exactly that bundle:
+
+| Where | What it becomes |
+|---|---|
+| [Chapter 2 §2.5](chapter-2.md) | `PreintegratedImuMeasurements` inside GTSAM's `ImuFactor` (5 variables) or `CombinedImuFactor` (6, bias evolution folded in) — one **edge** joining keyframe $i$ to keyframe $j$ |
+| [Chapter 2 §2.6](chapter-2.md) | the `CombinedImuFactor(X(i-1), V(i-1), X(i), V(i), B(i-1), B(i), pim)` line of the LIO-SAM-shaped graph, with `pim.resetIntegrationAndSetBias()` closing the loop back to §1.6 |
+| [Chapter 3 §3.2](chapter-3.md) | the second term of the VI bundle-adjustment objective, $\sum_i\lVert\mathbf{r}_{\mathcal{I}(i,i+1)}\rVert^2_{\boldsymbol{\Sigma}_\mathcal{I}}$ — the inertial half, sitting beside visual reprojection |
+| [Chapter 3 §3.3](chapter-3.md) | ORB-SLAM3's pose prediction and its inertial-only MAP initialization, which estimates scale, gravity and biases against a fixed visual trajectory |
+| [Chapter 4 §4.3](chapter-4.md) | one link of the pose chain in the canonical SLAM pipeline, the part that survives when loop closure re-optimizes everything around it |
+| [Chapter 5](chapter-5.md) | *not* consumed as a factor at all — the autopilot runs a filter, where the IMU is an **input to state prediction, never an observation**. The odometry that VIO/SLAM produced from these factors arrives instead as an external-vision aiding source (§5.4, §5.7) |
+
+That last row is the one worth sitting with. Chapters 1–4 treat the IMU as a *measurement between two poses* and solve for both. Chapter 5 treats it as a *control input* that drives the state forward, and never forms an IMU residual at all. Same sensor, two irreconcilable roles — and on a real vehicle both run simultaneously, with the optimizer's output entering the filter as just another aiding source.

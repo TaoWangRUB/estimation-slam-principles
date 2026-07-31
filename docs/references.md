@@ -23,11 +23,11 @@ Worth knowing: the document itself carries an erratum notice — it corrects a s
 - **Solà, Deray, Atchuthan**, *A micro Lie theory for state estimation in robotics*, arXiv:1812.01537. The most readable derivation of right/left Jacobians and the $\oplus$/$\ominus$ conventions of §0.2.
 - **Barrau & Bonnabel**, *The Invariant Extended Kalman Filter as a Stable Observer*, IEEE TAC 62(4), 2017. The group-affine property and InEKF result cited in §0.3.
 
-## EKF / INS (Chapter 2)
+## EKF / INS (Chapter 5)
 
 - **PX4 ECL EKF2** — [docs.px4.io/main/en/advanced_config/tuning_the_ecl_ekf.html](https://docs.px4.io/main/en/advanced_config/tuning_the_ecl_ekf.html) and the `PX4-Autopilot/src/modules/ekf2` source tree. The SymForce `derivation.py` that generates the covariance prediction and measurement Jacobians is the single most instructive file.
-- **ArduPilot EKF3** — [ardupilot.org/copter/docs/common-apm-navigation-extended-kalman-filter-overview.html](https://ardupilot.org/copter/docs/common-apm-navigation-extended-kalman-filter-overview.html); see `EK3_AFFINITY`, `EK3_ERR_THRESH` and the `EK3_SRCn_*` source-set parameters for the lane-switching and sensor-arbitration architecture of §2.7.
-- **Solà**, *Quaternion kinematics for the error-state Kalman filter*, arXiv:1711.02508. The definitive treatment of the error-state formulation, injection and reset Jacobian of §2.2.
+- **ArduPilot EKF3** — [ardupilot.org/copter/docs/common-apm-navigation-extended-kalman-filter-overview.html](https://ardupilot.org/copter/docs/common-apm-navigation-extended-kalman-filter-overview.html); see `EK3_AFFINITY`, `EK3_ERR_THRESH` and the `EK3_SRCn_*` source-set parameters for the lane-switching and sensor-arbitration architecture of §5.7.
+- **Solà**, *Quaternion kinematics for the error-state Kalman filter*, arXiv:1711.02508. The definitive treatment of the error-state formulation, injection and reset Jacobian of §5.2.
 
 ## Visual-inertial odometry (Chapter 3)
 
@@ -37,22 +37,22 @@ Worth knowing: the document itself carries an erratum notice — it corrects a s
 - **Geneva, Eckenhoff, Lee, Yang, Huang**, *OpenVINS: A Research Platform for Visual-Inertial Estimation*, ICRA 2020. FEJ and observability-constrained consistency fixes.
 - **Qin, Li, Shen**, *VINS-Mono: A Robust and Versatile Monocular Visual-Inertial State Estimator*, IEEE T-RO 34(4), 2018. Midpoint integration in preintegration, and online time-offset calibration.
 
-## Factor graphs (Chapter 4)
+## Factor graphs (Chapter 2)
 
-- **Dellaert & Kaess**, *Factor Graphs for Robot Perception*, Foundations and Trends in Robotics, 2017. The book-length treatment of everything in Chapter 4.
+- **Dellaert & Kaess**, *Factor Graphs for Robot Perception*, Foundations and Trends in Robotics, 2017. The book-length treatment of everything in Chapter 2.
 - **Kaess et al.**, *iSAM2: Incremental Smoothing and Mapping Using the Bayes Tree*, IJRR 31(2), 2012.
 - **GTSAM** — [gtsam.org](https://gtsam.org/). See also Dellaert, *Factor Graphs and GTSAM: A Hands-on Introduction* (technical report).
-- **Yang, Antonante, Tzoumas, Carlone**, *Graduated Non-Convexity for Robust Spatial Perception*, RA-L 2020. The GNC recommended for loop closures in §4.6.
+- **Yang, Antonante, Tzoumas, Carlone**, *Graduated Non-Convexity for Robust Spatial Perception*, RA-L 2020. The GNC recommended for loop closures in §2.6.
 
-## SLAM at large (Chapter 5)
+## SLAM at large (Chapter 4)
 
 - **Cadena et al.**, *Past, Present, and Future of Simultaneous Localization and Mapping: Toward the Robust-Perception Age*, IEEE T-RO 32(6), 2016. The standard survey.
 - **Thrun, Burgard, Fox**, *Probabilistic Robotics*, MIT Press. EKF-SLAM, FastSLAM, occupancy grids.
 - **Grisetti, Stachniss, Burgard**, *Improved Techniques for Grid Mapping with Rao-Blackwellized Particle Filters*, IEEE T-RO 23(1), 2007. GMapping's improved proposal and adaptive resampling.
-- **Zhang, Kaess, Singh**, *On Degeneracy of Optimization-based State Estimation Problems*, ICRA 2016. The eigen-analysis and solution remapping of §5.6.
-- **Labbé & Michaud**, *RTAB-Map as an open-source lidar and visual SLAM library*, JFR 36(2), 2019. The STM/WM/LTM memory management of §5.6.
-- **Oleynikova et al.**, *Voxblox*, IROS 2017, and NVIDIA **nvblox**. TSDF/ESDF mapping for §5.5.
-- **evo** — [github.com/MichaelGrupp/evo](https://github.com/MichaelGrupp/evo). ATE/RPE evaluation as described in §5.7.
+- **Zhang, Kaess, Singh**, *On Degeneracy of Optimization-based State Estimation Problems*, ICRA 2016. The eigen-analysis and solution remapping of §4.6.
+- **Labbé & Michaud**, *RTAB-Map as an open-source lidar and visual SLAM library*, JFR 36(2), 2019. The STM/WM/LTM memory management of §4.6.
+- **Oleynikova et al.**, *Voxblox*, IROS 2017, and NVIDIA **nvblox**. TSDF/ESDF mapping for §4.5.
+- **evo** — [github.com/MichaelGrupp/evo](https://github.com/MichaelGrupp/evo). ATE/RPE evaluation as described in §4.7.
 
 ---
 
