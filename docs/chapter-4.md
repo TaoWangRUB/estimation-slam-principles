@@ -92,7 +92,7 @@ flowchart TB
 
 **The four things that make ORB-SLAM3 what it is:**
 
-1. **MAP-based inertial initialization**, in three stages: (a) vision-only MAP to get an up-to-scale map, (b) **inertial-only MAP** which jointly estimates scale, gravity direction, velocities and biases treating the visual trajectory as fixed, (c) joint visual-inertial MAP refinement. Converges in ~2 s versus tens of seconds for the classical closed-form-plus-refinement approaches. The insight is that scale and gravity should be *estimated with their uncertainty*, not solved in closed form and then hoped about.
+1. **MAP-based inertial initialization**, in three stages: (a) vision-only MAP to get an up-to-scale map, (b) **inertial-only MAP** which jointly estimates scale, gravity direction, velocities and biases treating the visual trajectory as fixed, (c) joint visual-inertial MAP refinement. In the source these are three overloads of one function — `InertialOptimization(pMap, Rwg, scale, bg, ba, bMono, covInertial, …)` for the full inertial-only stage, then `(pMap, bg, ba)` and `(pMap, Rwg, scale)` for the cheaper refinements — and the full one returns `covInertial`, so the initialization reports its own uncertainty rather than a point estimate. Converges in ~2 s versus tens of seconds for the classical closed-form-plus-refinement approaches. The insight is that scale and gravity should be *estimated with their uncertainty*, not solved in closed form and then hoped about.
 
 2. **Atlas / multi-map.** When tracking is lost, rather than trying to relocalize forever in the current map, start a new active map and keep the old one. Place recognition runs against *all* maps; a match in a non-active map triggers **map merging** rather than a loop closure. This makes the system robust to kidnapping and to genuinely disconnected sessions.
 
@@ -352,9 +352,14 @@ Traced from ORB-SLAM3 (`src/ImuTypes.cc`, `Tracking.cc`, `LocalMapping.cc`, `Loo
 | Bias-corrected getters | `GetDeltaRotation/Velocity/Position(b)` | *same three names* | inline in `evaluate()` |
 | Frontend | ORB, 8-level pyramid (`ORBextractor`) | GFTT/Shi-Tomasi + KLT/LK/ST on GPU (`libs/sof`) | Shi-Tomasi + KLT (`feature_tracker`) |
 | Per-frame 3D work | project local map, pose-only BA | **resection only** — landmarks fetched from map; triangulation deferred to keyframes | triangulate in `feature_manager` |
-| Local optimization | g2o local BA (+ inertial) | Schur-complement bundler, CPU/GPU, cuNLS | Ceres fixed-lag, `MARGIN_OLD` / `MARGIN_SECOND_NEW` |
+| Tracking-time optimizer | `PoseOptimization` (visual), `PoseInertialOptimizationLastKeyFrame` / `…LastFrame` — three variants by reference and IMU state | `runStereoPnP` / `runInertialPnP` | none separate — the window solve absorbs it |
+| Local optimization | g2o: `LocalBundleAdjustment` (visual), `LocalInertialBA` with a `bLarge` wider-window flag | Schur-complement bundler, CPU/GPU, cuNLS | Ceres fixed-lag, `MARGIN_OLD` / `MARGIN_SECOND_NEW` |
+| Global refinement | `GlobalBundleAdjustemnt`, `FullInertialBA` (bias priors `priorG=1e2`, `priorA=1e6`; can return singular values / Hessian for observability checks) | async pose graph — no full BA exposed | none — `loop_fusion` does pose graph only |
+| Pose-graph variant | `OptimizeEssentialGraph`, `OptimizeSim3` (mono scale), **`OptimizeEssentialGraph4DoF`** | pose graph, nodes + edges | **`optimize4DoF()`** in `loop_fusion` |
+| Marginalization | `Optimizer::Marginalize(H, start, end)` — explicit Schur on the Hessian | inside the bundler | `marginalization_factor` + prior |
+| Map merging | `MergeInertialBA`, second `LocalBundleAdjustment` overload for merges | map save/load only | none |
 | Gauge fixing | fixed keyframes in g2o | `prev_pose.info` = 1e6 on first 6 entries | marginalization prior |
-| Inertial init | 3-stage MAP: vision-only → inertial-only → joint | `SolveGyroBias` → `SolveGravityDirection` → `LinearAlignment` → `RefineGravity` | `initialStructure()` → SfM → `visualInitialAlign()` |
+| Inertial init | three `InertialOptimization` overloads — (Rwg, scale, bg, ba, covariance) / (bg, ba) / (Rwg, scale) — the three MAP stages, one function each | `SolveGyroBias` → `SolveGravityDirection` → `LinearAlignment` → `RefineGravity` | `initialStructure()` → SfM → `visualInitialAlign()` |
 | High-rate output | — | `Odometry::Track()` per frame | **`fastPredictIMU()`** — IMU propagation to now |
 | Online extrinsics | no | no | **`initial_ex_rotation`** — estimates camera↔IMU rotation |
 | Loop closure lives in | `LoopClosing` thread + Atlas merge | `slam/async_slam` + `loop_closure_solver` (RANSAC here) | separate **`loop_fusion` node** (DBoW2, pose graph) |
@@ -373,6 +378,10 @@ dR = NormalizeRotation(dR*dRi.deltaR);   dR   = CalculateRotationFromSVD(dR*delt
 ```
 
 ORB-SLAM3 even carries the comment *"rely on no-updated delta rotation"* on the `dP`/`dV` lines — the ordering constraint of [§2.6](chapter-2.md), stated in the code.
+
+**Two implementations, one conclusion about gauge.** ORB-SLAM3 exposes `OptimizeEssentialGraph4DoF`; VINS-Fusion's loop-closure node runs `optimize4DoF()` and prints *"perfrom 4 DoF (x, y, z, yaw) pose graph optimization"*. Neither borrowed it from the other. Both restrict loop-closure pose-graph optimization to **four** degrees of freedom because the IMU makes roll and pitch observable, leaving only position and yaw free — which is exactly the gauge-freedom count of §4.2, arrived at independently and encoded in a function name. When a monocular map has no inertial data, ORB-SLAM3 falls back to `OptimizeSim3`, because scale is unobservable again and the seventh DoF returns.
+
+Two further details from `Optimizer.h` worth knowing. `FullInertialBA` takes explicit bias priors (`priorG = 1e2`, `priorA = 1e6` — accelerometer bias trusted two orders of magnitude less, since it is the harder one to observe) and can hand back **singular values and a Hessian flag**, which is how the system checks whether the inertial problem was actually well-conditioned before accepting an initialization. And `Optimizer::Marginalize(H, start, end)` is the Schur complement of §3.3 written out as a standalone matrix routine.
 
 **VINS-Fusion is the genuine dissenter**, and every difference is a deliberate trade:
 

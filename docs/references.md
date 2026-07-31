@@ -42,7 +42,7 @@ Worth knowing: the document itself carries an erratum notice — it corrects a s
 - **Geneva, Eckenhoff, Lee, Yang, Huang**, *OpenVINS: A Research Platform for Visual-Inertial Estimation*, ICRA 2020. FEJ and observability-constrained consistency fixes.
 - **Qin, Li, Shen**, *VINS-Mono: A Robust and Versatile Monocular Visual-Inertial State Estimator*, IEEE T-RO 34(4), 2018, and **VINS-Fusion** ([github.com/HKUST-Aerial-Robotics/VINS-Fusion](https://github.com/HKUST-Aerial-Robotics/VINS-Fusion)). Midpoint preintegration (`vins/src/factor/integration_base.h`), Ceres fixed-lag smoothing with two marginalization modes, `fastPredictIMU()` as output predictor, and online camera↔IMU extrinsic calibration (`initial/initial_ex_rotation`).
 
-The source-level comparison in §4.6 was traced against ORB-SLAM3 `src/ImuTypes.cc`/`Tracking.cc`/`LocalMapping.cc`/`LoopClosing.cc`, cuVSLAM v15.0.0 `libs/{imu,pipelines,sof}`, and VINS-Fusion `vins/src/{factor,estimator,initial}`.
+The source-level comparison in §4.6 was traced against ORB-SLAM3 `src/ImuTypes.cc`/`Tracking.cc`/`LocalMapping.cc`/`LoopClosing.cc`, cuVSLAM v15.0.0 `libs/{imu,pipelines,sof}`, and VINS-Fusion `vins/src/{factor,estimator,initial}` plus `loop_fusion/src/pose_graph.cpp`. ORB-SLAM3's optimizer surface was read from `include/Optimizer.h`.
 
 ## Factor graphs (Chapter 3)
 
