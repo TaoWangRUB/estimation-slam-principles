@@ -163,7 +163,40 @@ $$\boxed{\Delta\mathbf{v}_{ij} \triangleq \mathbf{R}_i^\top(\mathbf{v}_j - \math
 
 $$\boxed{\Delta\mathbf{p}_{ij} \triangleq \mathbf{R}_i^\top(\mathbf{p}_j - \mathbf{p}_i - \mathbf{v}_i\Delta t_{ij} - \tfrac{1}{2}\mathbf{g}\Delta t_{ij}^2) = \sum_k\left[\Delta\mathbf{v}_{ik}\Delta t + \tfrac{1}{2}\Delta\mathbf{R}_{ik}(\tilde{\mathbf{a}}_k - \mathbf{b}^a - \boldsymbol{\eta}^a_k)\Delta t^2\right]}$$
 
-The right-hand sides contain **no** $\mathbf{R}_i, \mathbf{v}_i, \mathbf{p}_i$. Compute once, reuse across all optimizer iterations. That is the entire idea. (Lupton & Sukkarieh 2012 in Euler angles; Forster et al. 2015/2017 on-manifold, which is what GTSAM implements.)
+The right-hand sides contain **no** $\mathbf{R}_i, \mathbf{v}_i, \mathbf{p}_i$ — only IMU samples and the bias. That single property is the whole of preintegration, so it is worth being explicit about what it buys.
+
+**Read each box as a split, not as an equation.** Everything the optimizer owns sits on the left; everything the IMU knows sits on the right:
+
+```
+     LEFT — states only                    RIGHT — IMU data only
+  (cheap; re-evaluated every            (expensive; computed ONCE per
+   optimizer iteration)                  keyframe, then never again)
+
+  R_iᵀ (v_j − v_i − g·Δt_ij)      =      Σ_k [ ΔR_ik (ã_k − b_a) Δt ]
+                                                ▲
+                                                └── relative rotation,
+                                                    from gyro alone.
+                                          No R_i.  No v_i.  No p_i.
+```
+
+Before the split, $\mathbf{R}_k = \mathbf{R}_i\Delta\mathbf{R}_{ik}$ sat *inside* the sum, so every term moved whenever the optimizer touched $\mathbf{R}_i$ — which it does every iteration. Pulling $\mathbf{R}_i^\top$ out front separates *where the body was pointing at time $i$* (a variable) from *how it rotated between $i$ and $k$* (pure gyro data). Only the second survives inside the sum.
+
+**The consequence: the right-hand side is a constant.** Compute it once when the keyframe is created and it becomes a fixed measurement — no different from a GPS fix or a pixel observation. The optimizer may move $\mathbf{R}_i, \mathbf{v}_i, \mathbf{p}_i$ anywhere it likes and that number never needs recomputing. This is precisely what the *pre* in preintegration means: integrated in advance, once, before and independently of the optimization.
+
+What it saves, concretely — 200 Hz IMU, 10 Hz keyframes (20 samples per factor), a 10-keyframe window (9 IMU factors), ~10 LM iterations per solve:
+
+| | Work per optimizer solve |
+|---|---|
+| Naive re-integration | $10\times 9\times 20 =$ **1800 integration steps**, each carrying an $\mathrm{Exp}$ and several 3×3 products |
+| Preintegrated | **20 steps once** for the new factor, then $10\times 9$ residual evaluations of a few matrix products each |
+
+The sharper consequence is that **optimizer cost decouples from IMU rate.** Go from 200 Hz to 1 kHz and the per-iteration cost is unchanged — the extra samples fold into the same fixed-size $\Delta\mathbf{R}, \Delta\mathbf{v}, \Delta\mathbf{p}$. Without preintegration a faster IMU directly slows the backend, which is a deeply unhelpful trade to be forced into.
+
+The intuition, if the algebra obscures it: storing the motion between two keyframes as raw IMU samples is like describing a route as every GPS breadcrumb along it — move the start point and you must re-walk the whole thing. Preintegration instead stores *"B is 3.2 km northeast of A, rotated 40°."* That relative displacement stays valid wherever A turns out to be. The IMU only ever measured relative motion; this algebra just makes that explicit.
+
+**One dependency survives.** $\mathbf{b}^g$ and $\mathbf{b}^a$ are still on the right-hand side, and they are optimization variables too — so the constant is only constant *for a fixed bias estimate*. That leftover is the entire reason §1.6 exists: rather than re-integrate when the bias moves, store $\partial\Delta\bar{\mathbf{v}}/\partial\mathbf{b}$ and its siblings and apply a first-order patch. Same motivation twice over — never touch the raw IMU stream again.
+
+(Lupton & Sukkarieh 2012 in Euler angles; Forster et al. 2015/2017 on-manifold, which is what GTSAM implements.)
 
 ## 1.5 Noise propagation
 
