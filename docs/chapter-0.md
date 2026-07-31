@@ -45,7 +45,7 @@ $$\mathrm{Log}(\mathrm{Exp}(\boldsymbol{\phi})\mathrm{Exp}(\delta\boldsymbol{\ph
 
 They differ by the adjoint: $\delta\boldsymbol{\phi}_{\text{left}} = \mathbf{R}\,\delta\boldsymbol{\phi}_{\text{right}}$. **Mixing them is the single most common source of "my filter almost works" bugs.** A covariance expressed in the wrong tangent basis produces an estimator that converges slowly and behaves inconsistently under rotation, which is maddening to debug because it never fails outright.
 
-## 0.3 SE(3) and $SE_2(3)$
+## 0.3 SE(3) and SE₂(3)
 
 $SE(3)$ stacks rotation and translation. Its exponential involves the left Jacobian $\mathbf{J}_l$ coupling the two blocks:
 

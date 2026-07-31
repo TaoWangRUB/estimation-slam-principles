@@ -21,6 +21,7 @@ The textbook stops here. Production needs: delay compensation, sequential scalar
 Split $\mathbf{x} = \hat{\mathbf{x}} \oplus \delta\mathbf{x}$: a **nominal state** integrated with full nonlinearity and no noise, and an **error state** which is small, zero-mean, and carries the covariance.
 
 Why:
+
 1. The rotation error is a minimal 3-vector in $\mathfrak{so}(3)$, so $\mathbf{P}$ is non-singular and correctly interpreted as uncertainty on the tangent space of $SO(3)$.
 2. The error is small by construction, so linearization is valid — while the nominal state is arbitrarily large.
 3. Jacobians become simple and slowly varying.
@@ -116,6 +117,7 @@ with $\gamma$ the per-sensor gate (`EKF2_GPS_P_GATE`, `EKF2_HGT_INNOV_GATE`, …
 Logging these test ratios is how you debug a real estimator. A test ratio that sits at 0.9 is telling you the sensor is barely passing and your $R$ is optimistic; a ratio that spikes at every turn is telling you about an unmodelled lever arm.
 
 **Covariance conditioning**, every step:
+
 - Force symmetry: $\mathbf{P} \leftarrow \tfrac{1}{2}(\mathbf{P}+\mathbf{P}^\top)$
 - Clamp diagonals to $[\sigma^2_{\min}, \sigma^2_{\max}]$
 - Reject negative variances (numerical failure indicator)

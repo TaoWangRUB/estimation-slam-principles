@@ -73,7 +73,7 @@ Discrete-time covariances scale as $\sigma^2/\Delta t$ for white noise and $\sig
 
 Getting this inversion backwards is a classic bug — and its symptom is a filter that is beautifully tuned at one IMU rate and diverges at another.
 
-## 1.2 Deriving the kinematics over $[i, j]$
+## 1.2 Deriving the kinematics over the interval [i, j]
 
 Four steps: invert the sensor model, write the continuous-time ODEs, discretize, chain.
 
@@ -239,11 +239,16 @@ The IMU factor is therefore a **15-dimensional residual** connecting $\{\mathbf{
 
 $$\mathbf{R}\leftarrow\mathbf{R}\,\mathrm{Exp}(\delta\boldsymbol{\phi}), \qquad \mathbf{p}\leftarrow\mathbf{p}+\mathbf{R}\,\delta\mathbf{p}, \qquad \mathbf{v}\leftarrow\mathbf{v}+\delta\mathbf{v}, \qquad \mathbf{b}\leftarrow\mathbf{b}+\delta\mathbf{b}$$
 
-| | $\delta\boldsymbol{\phi}_i$ | $\delta\mathbf{p}_i$ | $\delta\mathbf{v}_i$ | $\delta\boldsymbol{\phi}_j$ | $\delta\mathbf{p}_j$ | $\delta\mathbf{v}_j$ | $\delta\mathbf{b}^g_i$ | $\delta\mathbf{b}^a_i$ |
-|---|---|---|---|---|---|---|---|---|
-| $\mathbf{r}_{\Delta\mathbf{R}}$ | $-\mathbf{J}_r^{-1}(\mathbf{r}_{\Delta\mathbf{R}})\mathbf{R}_j^\top\mathbf{R}_i$ | $\mathbf{0}$ | $\mathbf{0}$ | $\mathbf{J}_r^{-1}(\mathbf{r}_{\Delta\mathbf{R}})$ | $\mathbf{0}$ | $\mathbf{0}$ | see below | $\mathbf{0}$ |
-| $\mathbf{r}_{\Delta\mathbf{v}}$ | $\lfloor\mathbf{R}_i^\top(\mathbf{v}_j-\mathbf{v}_i-\mathbf{g}\Delta t_{ij})\rfloor_\times$ | $\mathbf{0}$ | $-\mathbf{R}_i^\top$ | $\mathbf{0}$ | $\mathbf{0}$ | $\mathbf{R}_i^\top$ | $-\frac{\partial\Delta\bar{\mathbf{v}}_{ij}}{\partial\mathbf{b}^g}$ | $-\frac{\partial\Delta\bar{\mathbf{v}}_{ij}}{\partial\mathbf{b}^a}$ |
-| $\mathbf{r}_{\Delta\mathbf{p}}$ | $\lfloor\mathbf{R}_i^\top(\mathbf{p}_j-\mathbf{p}_i-\mathbf{v}_i\Delta t_{ij}-\tfrac{1}{2}\mathbf{g}\Delta t_{ij}^2)\rfloor_\times$ | $-\mathbf{I}$ | $-\mathbf{R}_i^\top\Delta t_{ij}$ | $\mathbf{0}$ | $\mathbf{R}_i^\top\mathbf{R}_j$ | $\mathbf{0}$ | $-\frac{\partial\Delta\bar{\mathbf{p}}_{ij}}{\partial\mathbf{b}^g}$ | $-\frac{\partial\Delta\bar{\mathbf{p}}_{ij}}{\partial\mathbf{b}^a}$ |
+| | $\mathbf{r}_{\Delta\mathbf{R}}$ | $\mathbf{r}_{\Delta\mathbf{v}}$ | $\mathbf{r}_{\Delta\mathbf{p}}$ |
+|---|---|---|---|
+| $\delta\boldsymbol{\phi}_i$ | $-\mathbf{J}_r^{-1}(\mathbf{r}_{\Delta\mathbf{R}})\mathbf{R}_j^\top\mathbf{R}_i$ | $\lfloor\mathbf{R}_i^\top(\mathbf{v}_j-\mathbf{v}_i-\mathbf{g}\Delta t_{ij})\rfloor_\times$ | $\lfloor\mathbf{R}_i^\top(\mathbf{p}_j-\mathbf{p}_i-\mathbf{v}_i\Delta t_{ij}-\tfrac{1}{2}\mathbf{g}\Delta t_{ij}^2)\rfloor_\times$ |
+| $\delta\mathbf{p}_i$ | $\mathbf{0}$ | $\mathbf{0}$ | $-\mathbf{I}$ |
+| $\delta\mathbf{v}_i$ | $\mathbf{0}$ | $-\mathbf{R}_i^\top$ | $-\mathbf{R}_i^\top\Delta t_{ij}$ |
+| $\delta\boldsymbol{\phi}_j$ | $\mathbf{J}_r^{-1}(\mathbf{r}_{\Delta\mathbf{R}})$ | $\mathbf{0}$ | $\mathbf{0}$ |
+| $\delta\mathbf{p}_j$ | $\mathbf{0}$ | $\mathbf{0}$ | $\mathbf{R}_i^\top\mathbf{R}_j$ |
+| $\delta\mathbf{v}_j$ | $\mathbf{0}$ | $\mathbf{R}_i^\top$ | $\mathbf{0}$ |
+| $\delta\mathbf{b}^g_i$ | see below | $-\dfrac{\partial\Delta\bar{\mathbf{v}}_{ij}}{\partial\mathbf{b}^g}$ | $-\dfrac{\partial\Delta\bar{\mathbf{p}}_{ij}}{\partial\mathbf{b}^g}$ |
+| $\delta\mathbf{b}^a_i$ | $\mathbf{0}$ | $-\dfrac{\partial\Delta\bar{\mathbf{v}}_{ij}}{\partial\mathbf{b}^a}$ | $-\dfrac{\partial\Delta\bar{\mathbf{p}}_{ij}}{\partial\mathbf{b}^a}$ |
 
 The gyro-bias column of $\mathbf{r}_{\Delta\mathbf{R}}$ is the only genuinely awkward one, because the bias enters *inside* a $\mathrm{Log}$ through another $\mathrm{Exp}$:
 
@@ -301,6 +306,7 @@ corrected(P, b_new):
 ```
 
 Two implementation notes that cost people days:
+
 - **Use midpoint (or RK4) integration**, not Euler, for $\tilde{\mathbf{a}}$ and $\tilde{\boldsymbol{\omega}}$ between samples. VINS-Mono uses midpoint. The accuracy gain is free. Note that Forster's derivation as published *is* Euler — plain zero-order hold, not the higher-order coning/sculling schemes of classical strapdown INS — so this is an implementation upgrade over the paper, not a restatement of it. Swapping in midpoint changes only which $\Delta\bar{\mathbf{R}}_{ik}$ enters each sum; the $\mathbf{A}$/$\mathbf{B}$ structure is untouched.
 - **Re-orthonormalize `dR` periodically.** Repeated matrix products drift off $SO(3)$ in float. Quaternion normalization is the usual fix.
 
