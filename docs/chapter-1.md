@@ -59,6 +59,58 @@ Everything after this chapter is an implementation detail of that figure. Note w
 | Bundle adjustment | **The main event** — IMU factors chain consecutive keyframes ([§4.2](chapter-4.md)) |
 | Loop closure | Roll and pitch become observable, so pose-graph optimization drops to **4 DoF** — x, y, z, yaw |
 
+### Frontend, backend, and the three tiers
+
+The chain above is one *sequence*, but it does not run at one *rate* or in one *thread*. Two cuts matter, and they are orthogonal:
+
+- **Frontend vs backend** — who *produces constraints* (data association) versus who *solves for states* (optimization).
+- **Tier** — how often a stage runs: every frame, every keyframe, or only when a loop is detected.
+
+```mermaid
+flowchart TB
+  classDef t1 fill:#31456b,stroke:#8ab4f8,color:#fff
+  classDef t2 fill:#6b3145,stroke:#f8a1b4,color:#fff
+  classDef t3 fill:#3d5b3d,stroke:#9ad49a,color:#fff
+
+  subgraph FE["<b>FRONTEND</b> — produces constraints"]
+    direction TB
+    A["Feature detection"]:::t1
+    B["Feature matching / tracking"]:::t1
+    C["RANSAC"]:::t1
+    D["Motion estimation — E/F matrix or PnP"]:::t1
+    E["Pose optimization<br/><i>landmarks FIXED</i>"]:::t1
+    A --> B --> C --> D --> E
+  end
+
+  subgraph BE["<b>BACKEND</b> — solves for states"]
+    direction TB
+    F["Triangulation — new landmarks"]:::t2
+    G["Local bundle adjustment<br/><i>landmarks MOVE</i>"]:::t2
+    H["Place recognition + geometric verification"]:::t3
+    I["<b>Pose-graph optimization</b><br/>4-DoF once inertial<br/><i>full BA optional</i>"]:::t3
+    F --> G
+    H --> I
+  end
+
+  E ==>|"new keyframe"| F
+  G ==>|"keyframe inserted"| H
+  I -.->|"corrected poses"| G
+```
+
+| Colour | Tier | Rate | What moves |
+|---|---|---|---|
+| **blue** | 1 — per frame | 10–60 Hz | the current pose only |
+| **red** | 2 — per keyframe | 1–10 Hz | a window of poses **and** landmarks |
+| **green** | 3 — on loop detection | seconds–minutes | all poses in the graph |
+
+**Is that the right separation?** Structurally yes — it is the same cut as rate domains **B**, **C** and **D** in §1.4. Two refinements are worth making:
+
+**Loop closure is pose-graph optimization, not global BA.** Landmarks are marginalized into relative pose constraints and only poses are solved, which is what makes it affordable on a large map. A full BA afterwards is *optional and rare*: ORB-SLAM3 spawns `GlobalBundleAdjustemnt` / `FullInertialBA` in yet another thread, but **VINS-Fusion never does one** — `loop_fusion` runs `optimize4DoF()` and stops — and cuVSLAM exposes no full BA either. So calling tier 3 "global BA" overstates what two of the three actually run.
+
+**There is a tier below all of these.** The output predictor of §1.5 runs at **IMU rate**, 200–1000 Hz, faster than tier 1, and it is neither frontend nor backend — it consumes the backend's state and produces the odometry the controller reads. That is rate domain **A**.
+
+The frontend/backend line is worth one caution too: *pose optimization* sits right on it. It is optimization mathematics, but it runs in the tracking thread with landmarks held fixed, so by convention it belongs to the frontend — ORB-SLAM3's own naming puts `Tracking` (which calls `PoseOptimization`) on the frontend side and `LocalMapping` / `LoopClosing` on the backend side. The honest boundary is not "is it an optimizer" but **"is it allowed to change the map"** — and that is exactly the tier-1/tier-2 distinction in the table above.
+
 !!! warning "What the IMU does *not* do to RANSAC"
     The textbook claim is that a known rotation shrinks the minimal sample — 5-point becomes 2-point — and since iterations go as $N = \log(1-p)/\log(1-w^s)$, a smaller $s$ buys speed. Solvers of that kind do exist.
 
