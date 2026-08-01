@@ -132,8 +132,10 @@ track(frame, imu_measurements):
 
 NVIDIA's GPU visual-inertial system, the engine under `isaac_ros_visual_slam`, and directly relevant if the target stack is Isaac ROS + Nav2 + nvblox on Jetson.
 
-!!! info "Now publicly released"
-    cuVSLAM is published at **[github.com/nvidia-isaac/cuVSLAM](https://github.com/nvidia-isaac/cuVSLAM)** under the **NVIDIA Community License**. Read the licence before assuming "open source" in the OSI sense — the core is distributed as a prebuilt `libcuvslam.so`, with the C++ and Python bindings, examples and build tooling in the repo. That is a materially different proposition from the GPLv3 of ORB-SLAM3, and it is the kind of distinction that decides what ships in a commercial robot.
+!!! info "Open source since 2026"
+    cuVSLAM is **fully open source** at **[github.com/nvidia-isaac/cuVSLAM](https://github.com/nvidia-isaac/cuVSLAM)** — 252 `.cpp`/`.cu` and 259 header files, no binary blob. Everything below is traced from that source.
+
+    The licence is the **NVIDIA Community License**, and its restriction is *platform*, not source: the works are licensed for use **on NVIDIA platforms**. Commercial use, modification and redistribution are permitted on that hardware. So the contrast with ORB-SLAM3 is not open-vs-closed — both are readable and modifiable — it is copyleft-on-any-hardware (GPLv3) versus permissive-on-NVIDIA-hardware. Prebuilt wheels and packages are published as a *convenience*, not as the only form of distribution.
 
 **Supported configurations**, per the repository:
 
@@ -148,10 +150,6 @@ NVIDIA's GPU visual-inertial system, the engine under `isaac_ros_visual_slam`, a
 Platforms are Ubuntu 22.04/24.04 on x86_64 and aarch64, **Jetson Orin** (JetPack 6.x, CUDA 12) and **Jetson Thor** (JetPack 7.x, CUDA 13). APIs are C++ and Python — **PyCuVSLAM** ships prebuilt wheels for Python 3.10+, which makes it far easier to benchmark against ORB-SLAM3 or OpenVINS than it used to be.
 
 The release also exposes **[cuNLS](https://github.com/nvidia-isaac/cuNLS)**, NVIDIA's CUDA-accelerated nonlinear least-squares solver, built from source via `FetchContent` and bundled into `libcuvslam` (`USE_CUNLS=ON` by default). It targets exactly the workloads of [Chapter 3](chapter-3.md) — bundle adjustment, pose-graph optimization, ICP-style alignment — which makes it the first credible GPU alternative to Ceres/g2o/GTSAM for the backend, not just the frontend. If you have been assuming the GPU only helps with feature extraction, that assumption is now out of date.
-
-Architecture, per the cuVSLAM paper: two major blocks, **frontend** and **backend**. The frontend handles real-time low-latency pose estimation and local mapping, prioritizing trajectory smoothness, and maintains a local odometry map of recent keyframe poses, visible 3D landmarks and their observations. It splits into a **2D module** — keypoint selection, feature tracking, keyframe selection — and a **3D module**. Keypoint selection divides the image into patches and takes Shi-Tomasi "Good Features to Track" per patch, enforcing approximately uniform spatial distribution with a total count above a threshold. The **backend** runs asynchronously and handles global map consistency via pose-graph optimization and loop closure, over a global map of camera poses, 2D observations, 3D landmarks, pose deltas and visual features.
-
-Isaac ROS documents that all SLAM-related operations run in a separate thread in parallel with visual odometry, that images are copied to GPU before tracking begins, and that landmarks and the pose graph are stored in a structure that does not grow when the same landmark is revisited.
 
 ```mermaid
 flowchart TB
@@ -224,8 +222,10 @@ flowchart TB
   style T2D fill:#31456b,stroke:#8ab4f8,color:#fff
 ```
 
-!!! note "Traced from source, v15.0.0"
-    This is read from `MultiVisualOdometryBase::track()` and `SolverSfMInertial::solveNextFrame()` rather than from the paper. The stage names are the code's own: its failure paths log *"Failed to track on the 2D tracking stage"* and *"Failed to track on the PnP stage"*. Upstream is now v17.0.0, which adds the multisensor mode, enables cuNLS by default and adds an NEC gyro-bias fallback; the skeleton above is unchanged by those.
+!!! note "Traced from source"
+    Read from `MultiVisualOdometryBase::track()` and `SolverSfMInertial::solveNextFrame()`, not from the paper. The stage names are the code's own: its failure paths log *"Failed to track on the 2D tracking stage"* and *"Failed to track on the PnP stage"*.
+
+    **What v17.0.0 changed.** The skeleton holds, but the inertial path was refactored out of the solver into a dedicated **`ImuFusionContext`** (`libs/pipelines/imu_fusion_context.h`), which now owns `add_measurement()`, `solve_inertial()` / `solve_visual()` as explicit alternatives, and `finalize_frame() → FrameResult{valid_pose, lost}` — so "PnP succeeded", "IMU carried the frame" and "both failed" became distinct outcomes rather than a boolean. Also new: `track_lifter` (the keyframe step is now a single `triangulate_and_lift` trace event), `depth_maps_context` for RGB-D and multisensor rigs, `track_online_multisensor` for the mixed RGB/RGB-D + optional IMU mode, and `gyro_bias_nec` — a bearing-vector gyro-bias estimator used when there are too few keyframes, or the motion is static or pure rotation and the linear method degenerates. cuNLS is enabled by default.
 
 Three details are worth pulling out, because each contradicts the obvious guess:
 
@@ -238,28 +238,15 @@ Three details are worth pulling out, because each contradicts the obvious guess:
 | `libs/sof` | sparse optical flow: image pyramids, `gftt` (Shi-Tomasi), KLT/LK/ST trackers, `kf_selector` |
 | `libs/odometry` | per-mode odometry — mono, multi, RGB-D, stereo-inertial, multisensor; pose prediction; ground constraint |
 | `libs/pnp` | mono / multicam PnP, visual ICP, multisensor pose estimator |
-| `libs/imu` | preintegration, inertial SBA (CPU + GPU), gravity/bias initialization |
+| `libs/imu` | preintegration, inertial SBA (CPU + GPU), gravity/bias initialization, `gyro_bias_nec` fallback |
 | `libs/sba` | Schur-complement bundler, CPU and GPU |
 | `libs/refinement` | cost functions (pinhole, rational polynomial) and robust losses |
 | `libs/epipolar` | fundamental matrix, homography, triangulation, resectioning utilities |
 | `libs/map` | `UnifiedMap`: keyframes, landmarks, depth-point and plane maps |
 | `libs/slam` | async SLAM, loop-closure solvers (with RANSAC), localizer |
-| `libs/pipelines` | orchestration — `track_online_{mono,multi,rgbd,inertial}`, state machine, async SBA service |
+| `libs/pipelines` | orchestration — `track_online_{mono,multi,rgbd,inertial,multisensor}`, `ImuFusionContext`, `track_lifter`, `depth_maps_context`, state machine, async SBA service |
 
 The per-frame settings struct decomposes along exactly these stages — `TrackPerFrameSettings` has `sof`, `kf`, `pnp` and `icp` sub-structs, one per box in the frontend row.
-
-| Module | Role |
-|---|---|
-| `libs/sof` | sparse optical flow: pyramid, GFTT/Shi-Tomasi, feature tracking |
-| `libs/epipolar` | fundamental matrix, homography, RANSAC, resectioning, reconstruction |
-| `libs/pnp` | mono / multicam PnP, visual ICP, multisensor pose estimator |
-| `libs/odometry` | per-mode odometry: mono, multi, RGB-D, stereo-inertial, multisensor; ground constraint |
-| `libs/imu` | preintegration, inertial SBA (CPU + GPU), gravity/bias initialization, gyro-bias NEC |
-| `libs/sba` | Schur-complement bundler, CPU and GPU |
-| `libs/refinement` | cost functions (pinhole, rational polynomial) and robust loss functions |
-| `libs/map` | keyframes, landmarks, depth-point and plane maps |
-| `libs/slam` | async SLAM, loop closure, localizer, map view |
-| `libs/pipelines` | orchestration — `track_online_{mono,multi,rgbd,inertial,multisensor}`, state machine, async SBA service |
 
 **Reported performance:** average trajectory error below 1% on KITTI odometry and mean position error under 5 cm on EuRoC, running in real time on Jetson. Deployed processing 8 Full-HD distorted RGB images at 30 FPS from 4 stereo cameras on a Jetson Orin AGX within the Isaac Perceptor framework. Multi-camera mode gives two documented benefits: trajectory reliability in feature-poor environments, and higher loop-closure detection rates. A demonstrated robustness test covered cameras randomly with opaque film for 20–60 s intervals with at least one stereo pair uncovered, and tracking survived.
 
@@ -304,7 +291,71 @@ Version 17.0.0 (2026-07-21) enables cuNLS by default and adds the `Multisensor` 
 
 That last cluster is your hardware-integration territory. The XVS master/slave sync on global-shutter sensors and FC-triggered capture is exactly what "ideally through hardware synchronization" means, and being able to say *why* — that a 10 ms inter-camera skew at 1 m/s injects a 1 cm baseline error that the triangulation attributes to depth — is a much stronger statement than "I set up the cameras."
 
-## 4.5 Contrast: MSCKF, the filter-based alternative
+## 4.5 VINS-Fusion — architecture
+
+Traced from `vins/src/{featureTracker,estimator,factor,initial}` and `loop_fusion/src`. Structurally it is the odd one out: **three separate ROS nodes**, not three threads in one process, and the split is where the interesting design decisions sit.
+
+```mermaid
+flowchart TB
+  subgraph VN["<b>vins</b> node — rosNodeTest.cpp"]
+    direction TB
+    subgraph FTS["feature tracker"]
+      FT["trackImage()<br/>Shi-Tomasi goodFeaturesToTrack + KLT<br/>calcOpticalFlowPyrLK, fwd-bwd check<br/><i>featureTracker/feature_tracker.cpp</i>"]
+    end
+    subgraph ES["estimator — processMeasurements() thread"]
+      direction TB
+      GIMU["getIMUInterval(prevTime, curTime)"]
+      PIMU["processIMU() → IntegrationBase::push_back()<br/><b>midPointIntegration</b><br/><i>factor/integration_base.h</i>"]
+      PIMG["processImage() → FeatureManager<br/>triangulate · outliersRejection"]
+      SF{"SolverFlag"}
+      INITS["<b>INITIAL</b>: initialStructure()<br/>relativePose (solve_5pts) → initial_sfm<br/>→ visualInitialAlign()<br/>gyro bias · gravity · scale · velocity<br/>+ initial_ex_rotation (online cam↔IMU)"]
+      OPT["<b>NON_LINEAR</b>: optimization() — Ceres<br/>IMUFactor · ProjectionTwoFrame*Factor<br/>MarginalizationFactor"]
+      SW["slideWindow()<br/>MARGIN_OLD | MARGIN_SECOND_NEW"]
+      GIMU --> PIMU --> PIMG --> SF
+      SF -->|not initialized| INITS --> OPT
+      SF -->|initialized| OPT --> SW
+    end
+    FASTP["<b>inputIMU()</b> → fastPredictIMU()<br/>→ pubLatestOdometry()<br/><i>IMU-rate output — the §2.9 predictor</i>"]
+  end
+
+  subgraph LF["<b>loop_fusion</b> node — separate process"]
+    direction TB
+    KFDB["KeyFrame + BRIEF descriptors<br/>DBoW2 <i>(ThirdParty/DBoW)</i>"]
+    DET["detectLoop() → PnP RANSAC verification"]
+    PG4["<b>optimize4DoF()</b> — x, y, z, yaw<br/><i>loop_fusion/src/pose_graph.cpp</i>"]
+    KFDB --> DET --> PG4
+  end
+
+  subgraph GF["<b>global_fusion</b> node"]
+    GPS["GPS / GNSS fused into a global pose graph"]
+  end
+
+  IMU(("IMU")) --> FASTP
+  IMU --> GIMU
+  CAM(("camera(s)")) --> FT --> PIMG
+  FASTP -->|"odometry @ IMU rate"| CTRL(("controller"))
+  SW -->|"keyframe + VIO pose"| KFDB
+  PG4 -->|"drift-corrected pose,<br/>yaw_drift + shift_r"| GPS
+  SW -->|"window pose"| GPS
+
+  style PIMU fill:#31456b,stroke:#8ab4f8,color:#fff
+  style OPT fill:#6b3145,stroke:#f8a1b4,color:#fff
+  style FASTP fill:#6b3145,stroke:#f8a1b4,color:#fff
+```
+
+**Four decisions that distinguish it.**
+
+1. **Loop closure is a different process.** ORB-SLAM3 runs it as a thread sharing the Atlas; cuVSLAM as an async service sharing the map. VINS ships `loop_fusion` as its own node, communicating over topics. The estimator therefore cannot be blocked by loop closure at all — the strongest possible form of the domain-D rule in [§1.3](chapter-1.md) — at the cost of duplicating keyframe state across a process boundary.
+
+2. **`fastPredictIMU()` on every IMU sample.** `inputIMU()` calls it and immediately publishes `pubLatestOdometry()`. This is the output predictor of [§2.9](chapter-2.md) as a first-class citizen, which is why VINS is the one of the three you can hand directly to a flight controller. Neither of the others publishes at IMU rate.
+
+3. **Two marginalization modes.** `MARGIN_OLD` drops the oldest keyframe and folds it into the prior; `MARGIN_SECOND_NEW` throws away the second-newest *frame* instead, keeping the window's time span when the newest frame carries little parallax. That choice is made per frame from the tracked-feature parallax — the fixed-lag machinery of [§3.3](chapter-3.md) with a heuristic on top.
+
+4. **Online extrinsic calibration.** `initial_ex_rotation` estimates the camera↔IMU rotation during initialization. The others require it from a calibration file. If your rig's extrinsics are uncertain — a compliant mount, a field-swapped camera — this alone can decide the choice.
+
+**Initialization is loosely coupled**, unlike ORB-SLAM3's MAP formulation: a pure-visual SfM (`relativePose` via the 5-point algorithm, then `initial_sfm`) is solved first, and `visualInitialAlign()` then aligns inertial quantities to that fixed visual trajectory — solving gyro bias, gravity direction, metric scale and per-frame velocities as a linear problem. cuVSLAM's `SolveGyroBias`/`LinearAlignment` follows the same recipe and says so in its comments; ORB-SLAM3 is the one that replaced it with a MAP estimate carrying covariance.
+
+## 4.6 Contrast: MSCKF, the filter-based alternative
 
 Worth knowing because OpenVINS and many commercial VIOs use it, and because the null-space trick is elegant.
 
@@ -320,49 +371,38 @@ The landmark is gone. You get a landmark-free EKF update whose cost is linear in
 
 **Consistency.** Naive MSCKF gains spurious information along the 4 unobservable directions, because the same state is linearized at different points across timesteps, artificially raising the rank of the observability matrix. Fixes: **FEJ** (fix each state's linearization point at its first estimate) or **OC-EKF** (project Jacobians onto the correct nullspace). The consequence of not fixing it is an overconfident covariance — which is worse than an inaccurate one, because everything downstream trusts it.
 
-## 4.6 Comparison
+## 4.7 Comparison
 
-The first table is the usual high-level one. The second is the interesting one: it comes from reading the three source trees rather than the three papers.
-
-| | ORB-SLAM3 | cuVSLAM | VINS-Fusion | OpenVINS |
-|---|---|---|---|---|
-| Backend | Local BA + pose graph + full BA | Local opt + pose graph (async) | Fixed-lag smoother (Ceres) | MSCKF filter |
-| Features | ORB (binary) | Shi-Tomasi + tracking, GPU | Shi-Tomasi + KLT | KLT / descriptor |
-| Landmarks in state | Yes (map) | Yes (map) | Yes (window) | No (null-space) |
-| Loop closure | DBoW2 + local-window 3D verification | Yes, pose graph | DBoW2 | Not core |
-| Multi-map | Yes (Atlas) | Map save/load | No | No |
-| Hardware | CPU, multi-thread | **GPU / Jetson** (Orin, Thor) | CPU | CPU |
-| Licence | GPLv3 | **NVIDIA Community License** (prebuilt core + open bindings) | GPLv3 | GPLv3 |
-
-The GPLv3 row is not a footnote — it is often the actual decision driver in a commercial robot, and mentioning it signals you've shipped something rather than only benchmarked.
-
-### At the level of the source
-
-Traced from ORB-SLAM3 (`src/ImuTypes.cc`, `Tracking.cc`, `LocalMapping.cc`, `LoopClosing.cc`), cuVSLAM v15.0.0 (`libs/imu`, `libs/pipelines`, `libs/sof`), and VINS-Fusion (`vins/src/factor`, `estimator`, `initial`).
+One table, traced from the three source trees rather than the three papers: ORB-SLAM3 (`src/ImuTypes.cc`, `Tracking.cc`, `LocalMapping.cc`, `LoopClosing.cc`, `include/Optimizer.h`), cuVSLAM v17.0.0 (`libs/{imu,pipelines,sof,sba,slam}`), VINS-Fusion (`vins/src/{factor,estimator,initial}`, `loop_fusion/src`).
 
 | | **ORB-SLAM3** | **cuVSLAM** | **VINS-Fusion** |
 |---|---|---|---|
+| Process model | 3 threads + Atlas, one process | frontend + async SBA service + async SLAM | **3 ROS nodes**, separate processes |
 | Preintegration class | `IMU::Preintegrated` | `sba_imu::IMUPreintegration` | `IntegrationBase` |
-| Integration scheme | **Euler** — `dP`/`dV` use the *not-yet-updated* `dR` | **Euler** — identical | **Midpoint** — `midPointIntegration()` averages the two samples |
+| Integration scheme | **Euler** — `dP`/`dV` use the not-yet-updated `dR` | **Euler** — identical | **Midpoint** — `midPointIntegration()` |
 | Rotation storage | `Matrix3f dR` + `NormalizeRotation()` | `Matrix3T dR` + `CalculateRotationFromSVD()` | `Quaterniond delta_q` |
 | Precision | `float` | `float` | `double` |
-| Bias Jacobians | `JRg, JVg, JVa, JPg, JPa` | `JRg, JVg, JVa, JPg, JPa` — *same names* | blocks of a 15×15 `jacobian` (`dp_dba`, `dq_dbg`, …) |
-| Covariance | `Matrix<float,15,15> C` | `Matrix9T` + separate 3×3 accel/gyro random-walk blocks | `Matrix<double,15,15> covariance` |
-| Re-integration | `Reintegrate()` | `Reintegrate()`, past `reintegration_thresh = 1e-4` | `repropagate(ba, bg)` |
-| Bias-corrected getters | `GetDeltaRotation/Velocity/Position(b)` | *same three names* | inline in `evaluate()` |
+| Bias Jacobians | `JRg, JVg, JVa, JPg, JPa` | *same five names* | blocks of a 15×15 `jacobian` |
+| Covariance | `Matrix<float,15,15> C` | `Matrix9T` + separate 3×3 random-walk blocks | `Matrix<double,15,15> covariance` |
+| Re-integration | `Reintegrate()` | `Reintegrate()` past `reintegration_thresh = 1e-4` | `repropagate(ba, bg)` |
 | Frontend | ORB, 8-level pyramid (`ORBextractor`) | GFTT/Shi-Tomasi + KLT/LK/ST on GPU (`libs/sof`) | Shi-Tomasi + KLT (`feature_tracker`) |
-| Per-frame 3D work | project local map, pose-only BA | **resection only** — landmarks fetched from map; triangulation deferred to keyframes | triangulate in `feature_manager` |
-| Tracking-time optimizer | `PoseOptimization` (visual), `PoseInertialOptimizationLastKeyFrame` / `…LastFrame` — three variants by reference and IMU state | `runStereoPnP` / `runInertialPnP` | none separate — the window solve absorbs it |
-| Local optimization | g2o: `LocalBundleAdjustment` (visual), `LocalInertialBA` with a `bLarge` wider-window flag | Schur-complement bundler, CPU/GPU, cuNLS | Ceres fixed-lag, `MARGIN_OLD` / `MARGIN_SECOND_NEW` |
-| Global refinement | `GlobalBundleAdjustemnt`, `FullInertialBA` (bias priors `priorG=1e2`, `priorA=1e6`; can return singular values / Hessian for observability checks) | async pose graph — no full BA exposed | none — `loop_fusion` does pose graph only |
-| Pose-graph variant | `OptimizeEssentialGraph`, `OptimizeSim3` (mono scale), **`OptimizeEssentialGraph4DoF`** | pose graph, nodes + edges | **`optimize4DoF()`** in `loop_fusion` |
-| Marginalization | `Optimizer::Marginalize(H, start, end)` — explicit Schur on the Hessian | inside the bundler | `marginalization_factor` + prior |
-| Map merging | `MergeInertialBA`, second `LocalBundleAdjustment` overload for merges | map save/load only | none |
+| Per-frame 3D work | project local map, pose-only BA | **resection only** — landmarks fetched from map, triangulation deferred to keyframes | triangulate in `FeatureManager` |
+| Tracking-time optimizer | `PoseOptimization`, `PoseInertialOptimizationLast{KeyFrame,Frame}` | `solve_visual()` / `solve_inertial()` via `ImuFusionContext` | none separate — the window solve absorbs it |
+| Local optimization | g2o `LocalBundleAdjustment` / `LocalInertialBA` (`bLarge` flag) | Schur-complement bundler CPU/GPU, cuNLS | Ceres fixed-lag |
+| Marginalization | `Optimizer::Marginalize(H, start, end)` | inside the bundler | `marginalization_factor`, **`MARGIN_OLD` / `MARGIN_SECOND_NEW`** |
 | Gauge fixing | fixed keyframes in g2o | `prev_pose.info` = 1e6 on first 6 entries | marginalization prior |
-| Inertial init | three `InertialOptimization` overloads — (Rwg, scale, bg, ba, covariance) / (bg, ba) / (Rwg, scale) — the three MAP stages, one function each | `SolveGyroBias` → `SolveGravityDirection` → `LinearAlignment` → `RefineGravity` | `initialStructure()` → SfM → `visualInitialAlign()` |
-| High-rate output | — | `Odometry::Track()` per frame | **`fastPredictIMU()`** — IMU propagation to now |
-| Online extrinsics | no | no | **`initial_ex_rotation`** — estimates camera↔IMU rotation |
-| Loop closure lives in | `LoopClosing` thread + Atlas merge | `slam/async_slam` + `loop_closure_solver` (RANSAC here) | separate **`loop_fusion` node** (DBoW2, pose graph) |
+| Global refinement | `GlobalBundleAdjustemnt`, `FullInertialBA` (`priorG=1e2`, `priorA=1e6`; returns singular values / Hessian) | async pose graph — no full BA | none — pose graph only |
+| Pose-graph variant | `OptimizeEssentialGraph`, `OptimizeSim3` (mono), **`OptimizeEssentialGraph4DoF`** | pose graph, nodes + edges | **`optimize4DoF()`** |
+| Inertial init | three `InertialOptimization` overloads — MAP, returns `covInertial` | `SolveGyroBias` → `SolveGravityDirection` → `LinearAlignment` → `RefineGravity` | `initialStructure()` → SfM → `visualInitialAlign()` |
+| Landmarks in state | yes (map) | yes (map) | yes (window) |
+| Loop closure | `LoopClosing` thread + Atlas merge | `slam/async_slam` + `loop_closure_solver` (RANSAC here) | separate **`loop_fusion` node** |
+| Multi-map / merge | **Atlas**, `MergeInertialBA` | map save/load, `LocalizeInMap` | none |
+| High-rate output | — | `Odometry::Track()` per frame | **`fastPredictIMU()`** at IMU rate |
+| Online extrinsics | no | no | **`initial_ex_rotation`** |
+| Hardware | CPU, multi-thread | **GPU / Jetson** (Orin, Thor) | CPU |
+| Licence | GPLv3 (copyleft, any hardware) | **NVIDIA Community License** — full source, use on NVIDIA platforms | GPLv3 |
+
+The licence row is not a footnote — it is often the actual decision driver in a commercial robot. All three are source-available; the question is what each obliges you to do. GPLv3 propagates to derivative works whatever the hardware; the NVIDIA Community License is permissive about derivatives but confines them to NVIDIA platforms.
 
 **The finding worth the trip.** cuVSLAM's preintegration is not merely *a* Forster implementation — it is line-for-line ORB-SLAM3's, down to the member names and the statement order:
 
