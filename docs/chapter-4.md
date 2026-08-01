@@ -404,6 +404,25 @@ One table, traced from the three source trees rather than the three papers: ORB-
 
 The licence row is not a footnote — it is often the actual decision driver in a commercial robot. All three are source-available; the question is what each obliges you to do. GPLv3 propagates to derivative works whatever the hardware; the NVIDIA Community License is permissive about derivatives but confines them to NVIDIA platforms.
 
+**Local BA is not shared either.** It is tempting to assume the tier-2 solve is the one place all three agree, since they all "run local bundle adjustment". They do not agree on any of the five things that define one:
+
+| | **ORB-SLAM3** | **cuVSLAM** | **VINS-Fusion** |
+|---|---|---|---|
+| Trigger | new keyframe | new keyframe | **every image frame** |
+| Thread | `LocalMapping` thread | async SBA service | the estimator thread itself |
+| Window | **covisibility** for the visual BA (`GetVectorCovisibleKeyFrames`); **temporal** for `LocalInertialBA` — `maxOpt = 10`, or `25` when `bLarge` | map window with `num_fixed_key_frames` at the boundary | fixed temporal sliding window (~10) |
+| How old states leave | **`KeyFrameCulling()`** — redundant keyframes deleted outright, no prior kept | frozen: fixed keyframes, downweighted by `boundary_imu_penalty` | **marginalization** → a `MarginalizationFactor` prior |
+| Landmark parameters | 3-DoF `XYZ` | 3-DoF `XYZ` (`std::vector<Vector3T> points`) | **1-DoF inverse depth** — `SIZE_FEATURE = 1`, anchored at the first observing frame |
+| Solver | g2o | Schur bundler, CPU/GPU, cuNLS | Ceres |
+
+Three of those are worth dwelling on.
+
+**ORB-SLAM3 changes its own window definition when inertial data appears.** The visual local BA is *covisibility*-based — optimize the keyframes that see what this one sees, which follows the structure of the scene. `LocalInertialBA` cannot do that, because IMU factors chain keyframes *in time*: an inertial residual only exists between temporally adjacent keyframes, so the window has to be a temporal one. The `bLarge` flag mentioned above is exactly `maxOpt` going from 10 to 25.
+
+**Only VINS keeps a marginalization prior.** ORB-SLAM3 *culls* redundant keyframes and keeps no record of them, and cuVSLAM freezes boundary keyframes rather than eliminating them. VINS is the only one paying the §3.3 cost — a dense prior over the Markov blanket — and the only one that therefore keeps the discarded information. That is the classic fixed-lag-smoother trade: ORB-SLAM3 throws information away to stay sparse; VINS keeps it and accepts fill-in.
+
+**Inverse depth is a real difference, not a detail.** A VINS landmark is *one scalar* anchored at its first observing frame; an ORB-SLAM3 or cuVSLAM landmark is three. That makes VINS's Hessian much smaller for the same feature count, keeps distant points well-conditioned (an inverse depth near zero is perfectly representable, an XYZ at infinity is not), and is part of why a full window BA every frame is affordable at all.
+
 **Two tiers, or one.** The pose-optimization / bundle-adjustment split is not universal, and where a system draws it says a lot about its threading:
 
 - **ORB-SLAM3 and cuVSLAM are two-tier.** A cheap per-frame step with landmarks *fixed* — `PoseOptimization` in g2o, or a PnP resection — runs in the tracking path, and an expensive per-keyframe BA that *moves* landmarks runs in another thread or an async service. The frame budget is protected by construction.
