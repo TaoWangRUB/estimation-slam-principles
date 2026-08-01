@@ -8,53 +8,45 @@ Two organising claims. First, **there is one algorithmic backbone** — the VO c
 
 Before any architecture, the algorithm. Every system in this document is a variation on one chain, and it is worth having that chain in mind before the boxes and wires of §1.2 — because the boxes exist to serve it.
 
-Pure **visual odometry** is this, and nothing else:
+**Read the left column alone and it is pure visual odometry. Read the whole figure and it is VIO** — the inertial half never replaces a stage, it feeds into them.
 
-```mermaid
-flowchart TB
-  A["Camera images"] --> B["<b>Feature detection</b><br/>ORB · SIFT · FAST · Shi-Tomasi"]
-  B --> C["<b>Feature matching</b> / tracking<br/>descriptor match or KLT"]
-  C --> D["<b>RANSAC</b><br/>remove incorrect matches"]
-  D --> E["<b>Motion estimation</b><br/>essential / fundamental matrix, or PnP"]
-  E --> F["<b>Pose optimization</b><br/>pose-only BA"]
-  F --> G["<b>Triangulation / mapping</b>"]
-  G --> H["<b>Bundle adjustment</b>"]
-  H --> I["<b>Loop closure</b>"]
+```
+ Camera images                                   IMU @ 200-1000 Hz
+       │                                                │
+       ▼                                                ▼
+ Feature detection                    ┌─────────────────────────────────┐
+ ORB · SIFT · FAST · Shi-Tomasi       │        PREINTEGRATION           │
+       │                              │   ΔR, Δv, Δp, Σ                 │
+       │                              │   + 5 bias Jacobians    (Ch.2)  │
+       │                              └────────────────┬────────────────┘
+       ▼                                               │
+ Feature matching / tracking ◄──── rotation prior ─────┤
+       │                                               │
+       ▼                                               │
+ RANSAC ◄───────────────────────── fewer DoF ──────────┤
+       │                            5-pt → ~2-pt       │
+       ▼                                               │
+ Motion estimation ◄────────────── initial guess ──────┤
+ E / F matrix, or PnP               + metric scale     │
+       │                                               │
+       ▼                                               │
+ Pose optimization ◄────────────── IMU factor ─────────┤
+       │                            state gains v,bias │
+       ▼                                               │
+ Triangulation / mapping                               │
+       │                                               │
+       ▼                                               │
+ Bundle adjustment ◄────────────── IMU factor chain ───┤
+       │                            → VI-BA            │
+       ▼                                               │
+ Loop closure ◄─────────────────── 6-DoF / Sim(3) ─────┘
+                                    collapses to 4-DoF
+
+ └──────── this column alone: VO ────────┘
+ └────────────────────── the whole figure: VIO ──────────────────────┘
 ```
 
-Everything after this chapter is an implementation detail of that chain, plus the inertial modifications below.
-
-### Where the IMU enters
-
-The common misreading is that the IMU is one more box. It is not: **preintegration ([Chapter 2](chapter-2.md)) attaches to four existing stages and adds three that pure VO has no analogue for.**
-
-```mermaid
-flowchart TB
-  subgraph VO["visual chain"]
-    direction TB
-    B["Feature detection"]
-    C["Feature matching"]
-    D["RANSAC"]
-    E["Motion estimation"]
-    F["Pose optimization"]
-    G["Triangulation"]
-    H["Bundle adjustment"]
-    I["Loop closure"]
-    B --> C --> D --> E --> F --> G --> H --> I
-  end
-
-  IMU["IMU<br/>200–1000 Hz"] --> PRE["<b>PREINTEGRATION</b><br/>ΔR, Δv, Δp, Σ<br/>+ 5 bias Jacobians<br/>Ch.2"]
-
-  PRE -->|"rotation prior<br/>→ guided matching"| C
-  PRE -->|"minimal solver shrinks<br/>5-point → ~2-point"| D
-  PRE -->|"initial guess<br/>+ metric scale"| E
-  PRE -->|"IMU factor — state gains<br/>velocity and biases"| F
-  PRE -->|"<b>IMU factor chain</b><br/>→ VI-BA"| H
-  PRE -.->|"roll/pitch observable<br/>6-DoF → <b>4-DoF</b>"| I
-
-  style PRE fill:#31456b,stroke:#8ab4f8,color:#fff
-  style H fill:#6b3145,stroke:#f8a1b4,color:#fff
-```
+Everything after this chapter is an implementation detail of that figure. Note what the inertial side does *not* touch: **feature detection**, which stays purely photometric.
 
 | Stage | What inertial data changes |
 |---|---|
