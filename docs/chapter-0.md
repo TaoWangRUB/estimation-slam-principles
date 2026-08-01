@@ -2,6 +2,23 @@
 
 Every chapter below rests on this. Get it wrong and the Jacobians are wrong everywhere.
 
+!!! abstract "The other half of the prerequisites"
+    This chapter supplies the **estimation-side** background — manifolds, tangent spaces, Jacobians. It deliberately assumes the **vision-side** background rather than teaching it. If the projective geometry in [Chapter 4](chapter-4.md) is the unfamiliar part, work through **CMU 16-385 Computer Vision** (Kris Kitani), whose slides are public: [cs.cmu.edu/~16385/s17/](https://www.cs.cmu.edu/~16385/s17/).
+
+    It maps onto this reference more directly than a general vision course would, because the frontends of every system in Chapter 4 are built from exactly these pieces:
+
+    | 16-385 lecture | Where it is assumed here |
+    |---|---|
+    | 2D transforms and alignment | §0.2 perturbation conventions, homography-based rejection |
+    | Camera matrix and camera models | §4.1 — the pinhole and Kannala-Brandt models, and $\partial\pi/\partial\mathbf{X}_C$ |
+    | Epipolar geometry, essential / fundamental matrix | `libs/epipolar` in cuVSLAM; VINS's `relativePose()` five-point initialization |
+    | Harris corners, SIFT detector and descriptor | ORB-SLAM3's ORB frontend; the Shi-Tomasi variant used by the other two |
+    | Stereo rectification and matching | stereo triangulation in §4.3–§4.5 |
+    | Optical flow, KLT tracking | the KLT trackers all three frontends run — cuVSLAM's `libs/sof`, VINS's `feature_tracker` |
+    | Filtering | [Chapter 6](chapter-6.md), and the MSCKF contrast in §4.6 |
+
+    The one thing it does not cover is bundle adjustment, which is [Chapter 3](chapter-3.md) here.
+
 ## 0.1 SO(3)
 
 $$SO(3) = \{\mathbf{R} \in \mathbb{R}^{3\times3} : \mathbf{R}^\top\mathbf{R} = \mathbf{I},\ \det\mathbf{R} = 1\}$$

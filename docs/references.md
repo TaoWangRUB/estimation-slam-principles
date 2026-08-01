@@ -24,6 +24,7 @@ Worth knowing: the document itself carries an erratum notice — it corrects a s
 - **Barfoot**, *State Estimation for Robotics*, Cambridge University Press. The standard reference for matrix Lie groups in estimation; the $SE_2(3)$ and Jacobian material in Chapter 0.
 - **Gao Xiang (高翔)**, 《视觉SLAM十四讲》 (*Visual SLAM: From Theory to Practice*). Accessible treatment of $SO(3)$/$SE(3)$, perturbation models and BA.
 - **Qin Yongyuan (秦永元)**, 《惯性导航》 (*Inertial Navigation*). Strapdown INS mechanization — the classical counterpart to the static-world simplifications of §2.1.
+- **CMU 16-385 Computer Vision** (Kris Kitani, Spring 2017) — [cs.cmu.edu/~16385/s17/](https://www.cs.cmu.edu/~16385/s17/). Public slide decks covering the vision background this reference assumes rather than teaches: 2D transforms, camera matrix and camera models, epipolar geometry and the essential/fundamental matrices, Harris and SIFT, stereo rectification and matching, optical flow and KLT tracking, and filtering. See the mapping table in [Chapter 0](chapter-0.md).
 - **Solà, Deray, Atchuthan**, *A micro Lie theory for state estimation in robotics*, arXiv:1812.01537. The most readable derivation of right/left Jacobians and the $\oplus$/$\ominus$ conventions of §0.2.
 - **Barrau & Bonnabel**, *The Invariant Extended Kalman Filter as a Stable Observer*, IEEE TAC 62(4), 2017. The group-affine property and InEKF result cited in §0.3.
 
