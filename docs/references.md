@@ -4,7 +4,7 @@ Sources this reference draws on, grouped by the chapter they matter most to. Whe
 
 ## System architecture (Chapter 1)
 
-The component split, rate domains and TF ownership of Chapter 1 are synthesized from the systems named throughout — ORB-SLAM3's three-thread structure, cuVSLAM's frontend/backend split, LIO-SAM's graph, and PX4's delayed-horizon design — rather than taken from any single source. **REP-105** ([ros.org/reps/rep-0105.html](https://www.ros.org/reps/rep-0105.html)) is the normative reference for the `map → odom → base_link` ownership rules of §1.6.
+The component split, rate domains and TF ownership of Chapter 1 are synthesized from the systems named throughout — ORB-SLAM3's three-thread structure, cuVSLAM's frontend/backend split, LIO-SAM's graph, and PX4's delayed-horizon design — rather than taken from any single source. **REP-105** ([ros.org/reps/rep-0105.html](https://www.ros.org/reps/rep-0105.html)) is the normative reference for the `map → odom → base_link` ownership rules of §1.7.
 
 ## IMU preintegration (Chapter 2)
 

@@ -1,7 +1,7 @@
 # Chapter 6 — EKF/INS: PX4 EKF2 and ArduPilot EKF3
 
 !!! abstract "Implements"
-    **the *other* estimator — it does not implement a §1.4 interface.** It consumes `ImuSample` as a prediction **input** (never an observation) and the `Odometry` of §1.2 as an aiding source. See §1.1 for the two arrows into it, and §6.9 for what that costs.
+    **the *other* estimator — it does not implement a §1.5 interface.** It consumes `ImuSample` as a prediction **input** (never an observation) and the `Odometry` of §1.3 as an aiding source. See §1.2 for the two arrows into it, and §6.9 for what that costs.
 
 
 Both descend from Paul Riseborough's ECL work. Both are 24-element-state, error-state, delay-compensated EKFs. They differ mainly in redundancy management and sensor-source abstraction. Reading either source tree is the fastest way to understand what production INS actually requires beyond the textbook filter.

@@ -15,7 +15,7 @@ A working reference: equations, pseudocode, architecture. Written for someone wh
 
 ## How to read this
 
-**[Chapter 1](chapter-1.md) is the map.** It defines the components, the interfaces between them, and the type carried on every wire. Every chapter after it decomposes exactly one box, and declares at the top which interface it implements. If a chapter ever seems to appear from nowhere, go back to §1.1 and find its box.
+**[Chapter 1](chapter-1.md) is the map.** §1.1 gives the algorithmic backbone — the classical VO chain, and exactly where inertial data attaches to it — and the rest of the chapter defines the components, the interfaces between them, and the type carried on every wire. Every chapter after it is an implementation detail of that backbone, decomposes one box, and declares at the top which interface it implements. If a chapter ever seems to appear from nowhere, go back to §1.1 and §1.2 and find it.
 
 ```mermaid
 flowchart LR
@@ -40,6 +40,6 @@ flowchart LR
 Two threads tie the halves of this document together:
 
 - **Downward** — an IMU factor built in Chapter 2 is consumed as `ImuFactor` in Chapter 3, appears as the inertial term of the VI bundle-adjustment objective in Chapter 4, and is one edge of the pose chain in Chapter 5.
-- **Across** — Chapters 2–5 build an *optimization-based* estimator. Chapter 6 is the *filtering* one on the autopilot, and in a real vehicle the two are chained: VIO/SLAM publishes odometry, and EKF2/EKF3 ingests it as an external-vision aiding source alongside GPS, baro and magnetometer. Same IMU, fused twice, for different reasons — see §1.1 and §6.9.
+- **Across** — Chapters 2–5 build an *optimization-based* estimator. Chapter 6 is the *filtering* one on the autopilot, and in a real vehicle the two are chained: VIO/SLAM publishes odometry, and EKF2/EKF3 ingests it as an external-vision aiding source alongside GPS, baro and magnetometer. Same IMU, fused twice, for different reasons — see §1.2 and §6.9.
 
 **Notation.** $(\cdot)_W$ world/navigation frame (ENU or NED — stated per chapter), $(\cdot)_B$ body/IMU frame, $(\cdot)_C$ camera frame. $\mathbf{R}_{WB} \in SO(3)$ rotates body vectors into world. $\lfloor \mathbf{v} \rfloor_\times$ is the skew-symmetric matrix. $\tilde{(\cdot)}$ denotes a measurement, $\hat{(\cdot)}$ an estimate, $\bar{(\cdot)}$ a noise-free quantity or one evaluated at the linearization point, and $\delta(\cdot)$ an error.

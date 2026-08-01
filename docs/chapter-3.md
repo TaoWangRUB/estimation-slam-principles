@@ -1,7 +1,7 @@
 # Chapter 3 — GTSAM and Factor Graphs
 
 !!! abstract "Implements"
-    **`Backend` (§1.4).** Consumes `Factor[]` — including the `PreintegratedImu` built in Chapter 2 — and produces `NavState`/`Values`. Rate domains **C** and **D** of §1.3.
+    **`Backend` (§1.5).** Consumes `Factor[]` — including the `PreintegratedImu` built in Chapter 2 — and produces `NavState`/`Values`. Rate domains **C** and **D** of §1.4.
 
 
 ## 3.1 The formulation

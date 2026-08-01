@@ -1,7 +1,7 @@
 # Chapter 5 — SLAM as a Whole
 
 !!! abstract "Implements"
-    **`PlaceRecognition` and `MapMaintenance` (§1.4).** Consumes `Keyframe` and `Values`, produces `LoopCandidate`, robust loop `Factor`s, `MapUpdate`, and the `map→odom` TF edge of §1.6. Rate domain **D**.
+    **`PlaceRecognition` and `MapMaintenance` (§1.5).** Consumes `Keyframe` and `Values`, produces `LoopCandidate`, robust loop `Factor`s, `MapUpdate`, and the `map→odom` TF edge of §1.7. Rate domain **D**.
 
 
 ## 5.1 Problem statement

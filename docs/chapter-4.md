@@ -1,7 +1,7 @@
 # Chapter 4 — Visual-Inertial Odometry: ORB-SLAM3 and cuVSLAM
 
 !!! abstract "Implements"
-    **`Frontend` (§1.4), and the whole B→C loop of §1.5.** Consumes `Frame` plus a `NavState` prior, produces `Feature[]`, `Landmark[]` and the projection `Factor[]` the backend consumes.
+    **`Frontend` (§1.5), and the whole B→C loop of §1.6.** Consumes `Frame` plus a `NavState` prior, produces `Feature[]`, `Landmark[]` and the projection `Factor[]` the backend consumes.
 
 
 ## 4.1 The measurement model
@@ -250,7 +250,7 @@ The per-frame settings struct decomposes along exactly these stages — `TrackPe
 
 **Reported performance:** average trajectory error below 1% on KITTI odometry and mean position error under 5 cm on EuRoC, running in real time on Jetson. Deployed processing 8 Full-HD distorted RGB images at 30 FPS from 4 stereo cameras on a Jetson Orin AGX within the Isaac Perceptor framework. Multi-camera mode gives two documented benefits: trajectory reliability in feature-poor environments, and higher loop-closure detection rates. A demonstrated robustness test covered cameras randomly with opaque film for 20–60 s intervals with at least one stereo pair uncovered, and tracking survived.
 
-### The public API is the §1.1 split, shipping
+### The public API is the §1.2 split, shipping
 
 Two classes, and they are exactly the frontend/backend division of [Chapter 1](chapter-1.md) — which is the strongest evidence that split is not just a pedagogical device:
 
@@ -272,18 +272,18 @@ class Slam {                         // backend — Ch.1 domain D
 };
 ```
 
-`Slam::Track()` takes an `Odometry::State`, so **that struct is the wire** between the two — the concrete instance of §1.2's contract:
+`Slam::Track()` takes an `Odometry::State`, so **that struct is the wire** between the two — the concrete instance of §1.3's contract:
 
 | `Odometry::State` field | Corresponds to |
 |---|---|
 | `Pose delta` — change since last keyframe | the *relative* odometry constraint, never a global pose |
-| `bool keyframe` | the keyframe-selector decision, i.e. the domain B → C boundary of §1.3 |
+| `bool keyframe` | the keyframe-selector decision, i.e. the domain B → C boundary of §1.4 |
 | `std::optional<Gravity> gravity` | present only in `Inertial`/`Multisensor` with an IMU — the gravity direction that §4.2 says inertial data makes observable |
 | `std::vector<Observation> observations` | `Feature` |
 | `std::vector<Landmark> landmarks` | `Landmark` |
 | `ContextMap context` | opaque, backend-internal |
 
-Two details reward attention. `Slam` exposes its `PoseGraph` as explicit `nodes` and `edges` — the pose-graph optimization of [Chapter 3](chapter-3.md), not hidden behind an opaque handle. And v17.0.0 *"split `Slam::Track()` into a void tracking call and `Slam::GetPose()`"*: the backend no longer makes the caller wait for a pose, which is precisely the domain-D-must-not-block rule of §1.3, learned the same way everyone learns it.
+Two details reward attention. `Slam` exposes its `PoseGraph` as explicit `nodes` and `edges` — the pose-graph optimization of [Chapter 3](chapter-3.md), not hidden behind an opaque handle. And v17.0.0 *"split `Slam::Track()` into a void tracking call and `Slam::GetPose()`"*: the backend no longer makes the caller wait for a pose, which is precisely the domain-D-must-not-block rule of §1.4, learned the same way everyone learns it.
 
 Version 17.0.0 (2026-07-21) enables cuNLS by default and adds the `Multisensor` mode — any mix of RGB and RGB-D cameras with an optional IMU, which requires a `-DUSE_CUNLS=ON` build and currently supports pinhole cameras only.
 
@@ -345,7 +345,7 @@ flowchart TB
 
 **Four decisions that distinguish it.**
 
-1. **Loop closure is a different process.** ORB-SLAM3 runs it as a thread sharing the Atlas; cuVSLAM as an async service sharing the map. VINS ships `loop_fusion` as its own node, communicating over topics. The estimator therefore cannot be blocked by loop closure at all — the strongest possible form of the domain-D rule in [§1.3](chapter-1.md) — at the cost of duplicating keyframe state across a process boundary.
+1. **Loop closure is a different process.** ORB-SLAM3 runs it as a thread sharing the Atlas; cuVSLAM as an async service sharing the map. VINS ships `loop_fusion` as its own node, communicating over topics. The estimator therefore cannot be blocked by loop closure at all — the strongest possible form of the domain-D rule in [§1.4](chapter-1.md) — at the cost of duplicating keyframe state across a process boundary.
 
 2. **`fastPredictIMU()` on every IMU sample.** `inputIMU()` calls it and immediately publishes `pubLatestOdometry()`. This is the output predictor of [§2.9](chapter-2.md) as a first-class citizen, which is why VINS is the one of the three you can hand directly to a flight controller. Neither of the others publishes at IMU rate.
 
@@ -429,6 +429,6 @@ Two further details from `Optimizer.h` worth knowing. `FullInertialBA` takes exp
 - **Quaternion over rotation matrix.** `delta_q` updated by a small-angle quaternion, so drift off the manifold is fixed by normalization rather than by an SVD projection.
 - **`double` over `float`.** Roughly 2× the memory traffic, which is exactly the wrong trade on a GPU — and is why the two GPU-adjacent implementations chose `float`.
 - **One 15×15 Jacobian block matrix** rather than five named 3×3 members: more general, less readable.
-- **It ships the two things the others lack for a real vehicle** — `fastPredictIMU()`, the output predictor of [§1.4](chapter-1.md)/[§2.9](chapter-2.md) that gives the controller a state *now*, and `initial_ex_rotation`, which calibrates the camera↔IMU rotation online.
+- **It ships the two things the others lack for a real vehicle** — `fastPredictIMU()`, the output predictor of [§1.5](chapter-1.md)/[§2.9](chapter-2.md) that gives the controller a state *now*, and `initial_ex_rotation`, which calibrates the camera↔IMU rotation online.
 
 Read together: ORB-SLAM3 defined the reference implementation, cuVSLAM adopted it and moved the surrounding pipeline onto the GPU, and VINS-Fusion re-derived the numerics with different trade-offs and paid more attention to what a flight controller actually needs downstream.

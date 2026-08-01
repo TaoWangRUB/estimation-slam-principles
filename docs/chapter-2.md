@@ -1,7 +1,7 @@
 # Chapter 2 — IMU Preintegration
 
 !!! abstract "Implements"
-    **`Preintegrator` and `OutputPredictor` (§1.4).** Consumes `ImuSample`, produces `PreintegratedImu` and the high-rate `Odometry`. Rate domains **A** and **C** of §1.3.
+    **`Preintegrator` and `OutputPredictor` (§1.5).** Consumes `ImuSample`, produces `PreintegratedImu` and the high-rate `Odometry`. Rate domains **A** and **C** of §1.4.
 
 
 !!! note "Sources"
