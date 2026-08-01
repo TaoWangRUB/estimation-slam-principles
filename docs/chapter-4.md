@@ -387,8 +387,8 @@ One table, traced from the three source trees rather than the three papers: ORB-
 | Re-integration | `Reintegrate()` | `Reintegrate()` past `reintegration_thresh = 1e-4` | `repropagate(ba, bg)` |
 | Frontend | ORB, 8-level pyramid (`ORBextractor`) | GFTT/Shi-Tomasi + KLT/LK/ST on GPU (`libs/sof`) | Shi-Tomasi + KLT (`feature_tracker`) |
 | Per-frame 3D work | project local map, pose-only BA | **resection only** — landmarks fetched from map, triangulation deferred to keyframes | triangulate in `FeatureManager` |
-| Tracking-time optimizer | `PoseOptimization`, `PoseInertialOptimizationLast{KeyFrame,Frame}` | `solve_visual()` / `solve_inertial()` via `ImuFusionContext` | none separate — the window solve absorbs it |
-| Local optimization | g2o `LocalBundleAdjustment` / `LocalInertialBA` (`bLarge` flag) | Schur-complement bundler CPU/GPU, cuNLS | Ceres fixed-lag |
+| Tracking-time optimizer | `PoseOptimization`, `PoseInertialOptimizationLast{KeyFrame,Frame}` — g2o, landmarks fixed | `runStereoPnP` / `runInertialPnP` (v17: `solve_visual()` / `solve_inertial()`) — resection, landmarks fixed | **none** — `initFramePoseByPnP()` only *seeds* the window solve |
+| Local optimization | g2o `LocalBundleAdjustment` / `LocalInertialBA` (`bLarge` flag) — separate thread, **per keyframe** | async SBA *service*, `ImuBAProblem` — **per keyframe** | Ceres `optimization()` — one window BA **per frame**, same thread |
 | Marginalization | `Optimizer::Marginalize(H, start, end)` | inside the bundler | `marginalization_factor`, **`MARGIN_OLD` / `MARGIN_SECOND_NEW`** |
 | Gauge fixing | fixed keyframes in g2o | `prev_pose.info` = 1e6 on first 6 entries | marginalization prior |
 | Global refinement | `GlobalBundleAdjustemnt`, `FullInertialBA` (`priorG=1e2`, `priorA=1e6`; returns singular values / Hessian) | async pose graph — no full BA | none — pose graph only |
@@ -398,11 +398,18 @@ One table, traced from the three source trees rather than the three papers: ORB-
 | Loop closure | `LoopClosing` thread + Atlas merge | `slam/async_slam` + `loop_closure_solver` (RANSAC here) | separate **`loop_fusion` node** |
 | Multi-map / merge | **Atlas**, `MergeInertialBA` | map save/load, `LocalizeInMap` | none |
 | High-rate output | — | `Odometry::Track()` per frame | **`fastPredictIMU()`** at IMU rate |
-| Online extrinsics | no | no | **`initial_ex_rotation`** |
+| Also solved online | — | — | **camera↔IMU extrinsics** (`para_Ex_Pose`) and **time offset** (`para_Td`), inside the same solve |
 | Hardware | CPU, multi-thread | **GPU / Jetson** (Orin, Thor) | CPU |
 | Licence | GPLv3 (copyleft, any hardware) | **NVIDIA Community License** — full source, use on NVIDIA platforms | GPLv3 |
 
 The licence row is not a footnote — it is often the actual decision driver in a commercial robot. All three are source-available; the question is what each obliges you to do. GPLv3 propagates to derivative works whatever the hardware; the NVIDIA Community License is permissive about derivatives but confines them to NVIDIA platforms.
+
+**Two tiers, or one.** The pose-optimization / bundle-adjustment split is not universal, and where a system draws it says a lot about its threading:
+
+- **ORB-SLAM3 and cuVSLAM are two-tier.** A cheap per-frame step with landmarks *fixed* — `PoseOptimization` in g2o, or a PnP resection — runs in the tracking path, and an expensive per-keyframe BA that *moves* landmarks runs in another thread or an async service. The frame budget is protected by construction.
+- **VINS-Fusion is one-tier.** `initFramePoseByPnP()` only seeds an initial pose; there is no pose-only optimizer. `optimization()` is a single Ceres problem over the whole sliding window — poses, velocities, biases, **inverse depths** (`para_Feature`), extrinsics and time offset — and it runs **every image frame**, in the estimator thread.
+
+That explains VINS's small window (~10 frames): a full BA has to fit inside the frame period, so the window is sized by the compute budget rather than by how much history is useful. It also explains why VINS can calibrate `para_Ex_Pose` and `para_Td` online while the others cannot — those variables are only observable in a joint solve, and VINS is running one continuously.
 
 **The finding worth the trip.** cuVSLAM's preintegration is not merely *a* Forster implementation — it is line-for-line ORB-SLAM3's, down to the member names and the statement order:
 

@@ -23,8 +23,8 @@ Before any architecture, the algorithm. Every system in this document is a varia
  Feature matching / tracking ◄──── rotation prior ─────┤
        │                                               │
        ▼                                               │
- RANSAC ◄───────────────────────── fewer DoF ──────────┤
-       │                            5-pt → ~2-pt       │
+ RANSAC ◄───────────────────────── better inlier ratio ┤
+       │                         (not a smaller solver)│
        ▼                                               │
  Motion estimation ◄────────────── initial guess ──────┤
  E / F matrix, or PnP               + metric scale     │
@@ -52,12 +52,27 @@ Everything after this chapter is an implementation detail of that figure. Note w
 |---|---|
 | Feature detection | **Nothing** — it is purely photometric |
 | Feature matching | A rotation prior shrinks the search window (*guided matching*) |
-| RANSAC | With rotation known the minimal solver shrinks — 5-point becomes ~2-point, so fewer samples for the same confidence |
+| RANSAC | **Indirectly, and more powerfully than the textbook claim** — see the note below |
 | Motion estimation | A good **initial guess** (Gauss-Newton is local, so this often decides convergence) and, for monocular, **metric scale** |
 | Pose optimization | Pose-only BA becomes *inertial*: the state grows from a 6-DoF pose to pose + velocity + biases |
 | Triangulation | Indirectly, via better poses; gravity also pins two rotational DoF of the whole map |
 | Bundle adjustment | **The main event** — IMU factors chain consecutive keyframes ([§4.2](chapter-4.md)) |
 | Loop closure | Roll and pitch become observable, so pose-graph optimization drops to **4 DoF** — x, y, z, yaw |
+
+!!! warning "What the IMU does *not* do to RANSAC"
+    The textbook claim is that a known rotation shrinks the minimal sample — 5-point becomes 2-point — and since iterations go as $N = \log(1-p)/\log(1-w^s)$, a smaller $s$ buys speed. Solvers of that kind do exist.
+
+    **Neither VINS-Fusion nor cuVSLAM uses one.** VINS runs plain `cv::findFundamentalMat(..., cv::FM_RANSAC, ...)` in both `feature_tracker.cpp` and `solve_5pts.cpp`; cuVSLAM's RANSAC lives in loop closure and relocalization, not the per-frame path at all.
+
+    What the IMU actually buys is a **higher inlier ratio $w$** going in, because predicted feature positions make KLT converge to the right minimum. And $w$ dominates $s$:
+
+    | | iterations at $p = 0.99$ |
+    |---|---|
+    | $s=5$, $w=0.5$ | **145** |
+    | $s=2$, $w=0.5$ — smaller minimal set | 16 |
+    | $s=5$, $w=0.8$ — better matches | **12** |
+
+    Improving the matches beats shrinking the solver. The gain is real; it just arrives through the matching stage rather than inside RANSAC.
 
 ### Why *preintegration*, and not just "integrate the IMU"
 
