@@ -43,52 +43,83 @@ Three concurrent threads plus the Atlas.
 
 ```mermaid
 flowchart TB
-  IN["stereo / mono / RGB-D<br/>+ IMU"] --> TR
+  classDef t1 fill:#31456b,stroke:#8ab4f8,color:#fff
+  classDef t2 fill:#6b3145,stroke:#f8a1b4,color:#fff
+  classDef t3 fill:#3d5b3d,stroke:#9ad49a,color:#fff
 
-  subgraph TRK["TRACKING thread"]
+  IN["stereo / mono / RGB-D + IMU"]
+
+  subgraph TRK["<b>FRONTEND</b> · tier 1 · per frame — Tracking::Track()"]
     direction TB
-    TR["ORB extraction<br/>8-level pyramid · FAST · rBRIEF"]
-    PP["pose prediction<br/>motion model or IMU preintegration (Ch.2)"]
-    T1["track ref-KF → track local map<br/>pose-only BA"]
-    RL{"tracking lost?"}
-    REL["relocalize: DBoW2 + PnP RANSAC<br/>else start new map in Atlas"]
-    KD{"new keyframe?"}
-    TR --> PP --> T1 --> RL
-    RL -->|yes| REL
-    RL -->|no| KD
+    EXT["ORBextractor — 8-level pyramid"]:::t1
+    PRE["PreintegrateIMU() → PredictStateIMU()"]:::t1
+    TWM["TrackWithMotionModel()<br/><i>SearchByProjection — guided</i>"]:::t1
+    TRK2["TrackReferenceKeyFrame()<br/><i>SearchByBoW — fallback</i>"]:::t1
+    REL["Relocalization()<br/><i>else CreateMapInAtlas()</i>"]:::t1
+    TLM["TrackLocalMap() → <b>PoseOptimization()</b><br/>or PoseInertialOptimizationLast{KeyFrame,Frame}<br/><i>1 pose, landmarks FIXED</i>"]:::t1
+    NKF{"NeedNewKeyFrame()"}
+    EXT --> PRE --> TWM
+    TWM -->|fail| TRK2 -->|fail| REL
+    TWM & TRK2 & REL --> TLM --> NKF
   end
 
-  subgraph LMP["LOCAL MAPPING thread"]
+  subgraph LMP["<b>BACKEND</b> · tier 2 · per keyframe — LocalMapping::Run()"]
     direction TB
-    LM["KF insertion · recent MapPoint culling<br/>triangulate new points"]
-    BA["<b>LOCAL BA</b> (+ IMU factors)"]
-    KC["KF culling · IMU init / refine"]
-    LM --> BA --> KC
+    PNK["ProcessNewKeyFrame()"]:::t2
+    MPC["MapPointCulling()"]:::t2
+    CNM["CreateNewMapPoints() — triangulate"]:::t2
+    SIN["SearchInNeighbors()"]:::t2
+    LBA["<b>LocalBundleAdjustment()</b> — covisibility window<br/><b>LocalInertialBA()</b> — temporal, maxOpt 10/25<br/><i>poses AND landmarks move</i>"]:::t2
+    KFC["KeyFrameCulling()"]:::t2
+    IMUI["InitializeIMU() · ScaleRefinement()"]:::t2
+    PNK --> MPC --> CNM --> SIN --> LBA --> KFC
+    IMUI -.-> LBA
   end
 
-  subgraph LCM["LOOP and MAP MERGING thread"]
+  subgraph LCM["<b>BACKEND</b> · tier 3 · on loop — LoopClosing::Run()"]
     direction TB
-    LC["DBoW2 place recognition"]
-    GV["local-window 3D geometric verification"]
-    SIM["Sim(3) / SE(3) alignment"]
-    FU["loop fusion → essential-graph optimization"]
-    FB["spawn FULL BA in a separate thread"]
-    LC --> GV --> SIM --> FU --> FB
+    DET["NewDetectCommonRegions()<br/>DetectCommonRegionsFromBoW / FromLastKF"]:::t3
+    SIM["DetectAndReffineSim3FromLastKF()<br/>SearchAndFuse() · FindMatchesByProjection()"]:::t3
+    COR["<b>CorrectLoop()</b> → <b>OptimizeEssentialGraph()</b><br/><i>ALL poses, NO landmarks —<br/>points dragged by reference KF</i>"]:::t3
+    MRG["MergeLocal() / MergeLocal2()<br/><i>match in a non-active map</i>"]:::t3
+    GBA["<b>RunGlobalBundleAdjustment()</b><br/>GlobalBundleAdjustemnt / FullInertialBA<br/><i>separate thread — ALL poses AND landmarks</i>"]:::t3
+    DET --> SIM --> COR --> GBA
+    SIM -.-> MRG -.-> GBA
   end
 
-  KD -->|yes| LM
-  KC --> LC
+  ATLAS[("<b>ATLAS</b> — active map + non-active maps 1..N<br/>KFs · MapPoints · covisibility graph<br/>spanning tree · DBoW2 database")]
 
-  ATLAS[("<b>ATLAS</b><br/>active map + non-active maps 1..N<br/>KFs · MapPoints · covisibility graph<br/>spanning tree · DBoW2 database")]
+  IN --> EXT
+  NKF -->|yes| PNK
+  KFC --> DET
   TRK <--> ATLAS
   LMP <--> ATLAS
   LCM <--> ATLAS
-  FU -.->|"match lies in a non-active map"| MM["<b>map merge</b><br/>rather than loop closure"]
-  MM -.-> ATLAS
 
-  style ATLAS fill:#31456b,stroke:#8ab4f8,color:#fff
-  style BA fill:#6b3145,stroke:#f8a1b4,color:#fff
+  style ATLAS fill:#4a4a2b,stroke:#d4d49a,color:#fff
 ```
+
+Colours are the tiers of [§1.1](chapter-1.md): **blue** = per frame, landmarks fixed; **red** = per keyframe, landmarks move; **green** = on loop, whole map. The three subgraphs are ORB-SLAM3's three threads, which map onto frontend (Tracking) and backend (LocalMapping, LoopClosing).
+
+!!! note "What actually moves, at each tier"
+    | | Poses | Landmarks |
+    |---|---|---|
+    | `PoseOptimization()` | 1 — current frame | **fixed**, used as measurements |
+    | `LocalBundleAdjustment()` / `LocalInertialBA()` | window | **free variables** — each moves independently to fit *all* the keyframes that observe it |
+    | `OptimizeEssentialGraph()` | **all** | **not variables at all** — afterwards each point is *rigidly dragged* by its reference keyframe |
+    | `RunGlobalBundleAdjustment()` | **all** | **free variables** again |
+
+    The pose-graph row is the subtle one, and the code states it plainly:
+
+    ```cpp
+    KeyFrame* pRefKF = pMP->GetReferenceKeyFrame();
+    g2o::Sim3 Srw         = vScw[nIDr];           // reference KF, before
+    g2o::Sim3 correctedSwr = vCorrectedSwc[nIDr]; // reference KF, after
+    eigCorrectedP3Dw = correctedSwr.map(Srw.map(eigP3Dw));
+    pMP->SetWorldPos(eigCorrectedP3Dw.cast<float>());
+    ```
+
+    A point is pushed into its reference keyframe's *old* frame and pulled back out through the *corrected* one. It moves rigidly with that one keyframe, so the map does not tear apart — but its geometry is never re-fitted. That is precisely the information the pose graph discarded, and precisely what the full BA afterwards exists to restore.
 
 **The four things that make ORB-SLAM3 what it is:**
 
