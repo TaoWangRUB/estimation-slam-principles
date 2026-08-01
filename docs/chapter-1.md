@@ -106,11 +106,12 @@ flowchart TB
   GV -->|reject| PR
   GV -->|"LoopFactor (robust)"| BE
 
-  BE -->|NavState| OUTP
+  BE -->|"NavState = R, p, <b>v</b>, <b>bias</b><br/>the anchor"| OUTP
   BE -->|NavState| FE
   BE -->|"Keyframe + NavState"| MAP["<b>Map maintenance</b><br/>grid · TSDF · ESDF<br/>Ch.5 §5.5"]
 
-  OUTP -->|"Odometry @ IMU rate"| CTRL["Controller / planner"]
+  FE -->|"pose @ frame rate<br/>10–60 Hz"| CTRL["Controller / planner"]
+  OUTP -->|"Odometry @ <b>IMU rate</b><br/>200–1000 Hz"| CTRL
   OUTP -->|"Odometry (ext. vision)"| EKF["<b>Autopilot EKF</b><br/>PX4 EKF2 · ArduPilot EKF3<br/>Ch.6"]
   ABS --> EKF
   IMU --> EKF
@@ -121,6 +122,20 @@ flowchart TB
   style FE fill:#31456b,stroke:#8ab4f8,color:#fff
   style EKF fill:#6b3145,stroke:#f8a1b4,color:#fff
 ```
+
+**Three things emit a pose, at three rates.** This is the part of the figure most worth slowing down on:
+
+| Source | Rate | Contains | Accuracy |
+|---|---|---|---|
+| Backend (§1.5 `Backend.at()`) | 1–10 Hz, keyframe | R, p, **v, bias** | best — optimized, but 50–100 ms stale |
+| Frontend (`Frontend.process` → PnP) | 10–60 Hz, frame | R, p only | tracked, not optimized |
+| Output predictor | **200–1000 Hz**, IMU | R, p, v | freshest; drifts between anchors |
+
+The arrow that surprises people is **Backend → Output predictor**, when the frontend is the thing "doing fast odometry". The reason is in the middle column: forward-propagating the IMU needs more than a pose. It needs **velocity**, because position integrates through it, and it needs the **biases**, because the raw samples must be corrected before use. A frontend PnP result is a pose and nothing else — no velocity, no bias — so it structurally *cannot* anchor an IMU propagation, however fresh it is.
+
+VINS-Fusion makes this explicit: `updateLatestStates()` copies `Ps[frame_count]`, `Rs[frame_count]`, `Vs[frame_count]`, `Bas[frame_count]`, `Bgs[frame_count]` — pose *and* velocity *and* both biases — from the newest state in the optimized window, and only then can `fastPredictIMU()` run on every IMU sample. It is called immediately after `optimization()`, so the anchor is always the freshest optimized state, not the oldest keyframe.
+
+So the division of labour is: the **frontend** answers "where am I *this frame*", the **backend** answers "where was I *accurately*, and how fast, and what are my biases", and the **output predictor** turns the second into an answer for *now*. A system can publish the frontend pose directly — cuVSLAM's `Odometry::Track()` does exactly that ([§4.4](chapter-4.md)) — but that path tops out at frame rate and carries no velocity.
 
 Note the two extra arrows into the autopilot EKF: it receives the **same IMU stream** the preintegrator consumed, *and* the odometry derived from it. That double path is not a mistake in the drawing — it is a real, widely-shipped architecture, and §6.9 is about what it costs you.
 
