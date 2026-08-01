@@ -184,6 +184,11 @@ The release also exposes **[cuNLS](https://github.com/nvidia-isaac/cuNLS)**, NVI
 
 ```mermaid
 flowchart TB
+  classDef t0 fill:#6b5b31,stroke:#f8d48a,color:#fff
+  classDef t1 fill:#31456b,stroke:#8ab4f8,color:#fff
+  classDef t2 fill:#6b3145,stroke:#f8a1b4,color:#fff
+  classDef t3 fill:#3d5b3d,stroke:#9ad49a,color:#fff
+  classDef ext fill:#4a316b,stroke:#b48af8,color:#fff
   subgraph PF["PER FRAME — MultiVisualOdometryBase::track()"]
     direction TB
     PRED["<b>1.</b> do_predict() — pose prediction<br/><i>odometry/pose_prediction</i>"]
@@ -251,6 +256,23 @@ flowchart TB
   style PRE fill:#31456b,stroke:#8ab4f8,color:#fff
   style ISBA fill:#6b3145,stroke:#f8a1b4,color:#fff
   style T2D fill:#31456b,stroke:#8ab4f8,color:#fff
+  style PRE fill:#6b5b31,stroke:#f8d48a,color:#fff
+  style PRED fill:#31456b,stroke:#8ab4f8,color:#fff
+  style T2D fill:#31456b,stroke:#8ab4f8,color:#fff
+  style KFSEL fill:#31456b,stroke:#8ab4f8,color:#fff
+  style GATE fill:#31456b,stroke:#8ab4f8,color:#fff
+  style ASSOC fill:#31456b,stroke:#8ab4f8,color:#fff
+  style IPNP fill:#31456b,stroke:#8ab4f8,color:#fff
+  style SPNP fill:#31456b,stroke:#8ab4f8,color:#fff
+  style SMU fill:#31456b,stroke:#8ab4f8,color:#fff
+  style TRI fill:#6b3145,stroke:#f8a1b4,color:#fff
+  style ADDKF fill:#6b3145,stroke:#f8a1b4,color:#fff
+  style ISBA fill:#6b3145,stroke:#f8a1b4,color:#fff
+  style OSBA fill:#6b3145,stroke:#f8a1b4,color:#fff
+  style INIT fill:#6b3145,stroke:#f8a1b4,color:#fff
+  style ASLAM fill:#3d5b3d,stroke:#9ad49a,color:#fff
+  style LCS fill:#3d5b3d,stroke:#9ad49a,color:#fff
+  style LOCZ fill:#3d5b3d,stroke:#9ad49a,color:#fff
 ```
 
 !!! note "Traced from source"
@@ -328,6 +350,11 @@ Traced from `vins/src/{featureTracker,estimator,factor,initial}` and `loop_fusio
 
 ```mermaid
 flowchart TB
+  classDef t0 fill:#6b5b31,stroke:#f8d48a,color:#fff
+  classDef t1 fill:#31456b,stroke:#8ab4f8,color:#fff
+  classDef t2 fill:#6b3145,stroke:#f8a1b4,color:#fff
+  classDef t3 fill:#3d5b3d,stroke:#9ad49a,color:#fff
+  classDef ext fill:#4a316b,stroke:#b48af8,color:#fff
   subgraph VN["<b>vins</b> node — rosNodeTest.cpp"]
     direction TB
     subgraph FTS["feature tracker"]
@@ -372,6 +399,18 @@ flowchart TB
   style PIMU fill:#31456b,stroke:#8ab4f8,color:#fff
   style OPT fill:#6b3145,stroke:#f8a1b4,color:#fff
   style FASTP fill:#6b3145,stroke:#f8a1b4,color:#fff
+  style PIMU fill:#6b5b31,stroke:#f8d48a,color:#fff
+  style FASTP fill:#6b5b31,stroke:#f8d48a,color:#fff
+  style FT fill:#31456b,stroke:#8ab4f8,color:#fff
+  style GIMU fill:#31456b,stroke:#8ab4f8,color:#fff
+  style PIMG fill:#31456b,stroke:#8ab4f8,color:#fff
+  style INITS fill:#6b3145,stroke:#f8a1b4,color:#fff
+  style OPT fill:#6b3145,stroke:#f8a1b4,color:#fff
+  style SW fill:#6b3145,stroke:#f8a1b4,color:#fff
+  style KFDB fill:#3d5b3d,stroke:#9ad49a,color:#fff
+  style DET fill:#3d5b3d,stroke:#9ad49a,color:#fff
+  style PG4 fill:#3d5b3d,stroke:#9ad49a,color:#fff
+  style GPS fill:#4a316b,stroke:#b48af8,color:#fff
 ```
 
 **Four decisions that distinguish it.**

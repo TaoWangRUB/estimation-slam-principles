@@ -102,6 +102,9 @@ flowchart TB
 | **blue** | 1 — per frame | 10–60 Hz | the current pose only |
 | **red** | 2 — per keyframe | 1–10 Hz | a window of poses **and** landmarks |
 | **green** | 3 — on loop detection | seconds–minutes | all poses in the graph |
+| **amber** | 0 — below all of them | 200–1000 Hz | nothing is *optimized*; the state is propagated |
+
+These five colours are used in the architecture diagram of §1.2 (which carries the legend) and in every implementation diagram of Chapter 4 — [§4.3](chapter-4.md), [§4.4](chapter-4.md), [§4.5](chapter-4.md) — so the same box colour means the same thing throughout.
 
 **Is that the right separation?** Structurally yes — it is the same cut as rate domains **B**, **C** and **D** in §1.4. Two refinements are worth making:
 
@@ -151,6 +154,20 @@ And one bonus that is not a stage but saves systems in the field: when vision fa
 
 ```mermaid
 flowchart TB
+  classDef t0 fill:#6b5b31,stroke:#f8d48a,color:#fff
+  classDef t1 fill:#31456b,stroke:#8ab4f8,color:#fff
+  classDef t2 fill:#6b3145,stroke:#f8a1b4,color:#fff
+  classDef t3 fill:#3d5b3d,stroke:#9ad49a,color:#fff
+  classDef ext fill:#4a316b,stroke:#b48af8,color:#fff
+
+  subgraph LEG["Tier legend — the same colours are used in §4.3, §4.4 and §4.5"]
+    direction LR
+    L0["<b>tier 0</b> · IMU rate<br/>200–1000 Hz"]:::t0
+    L1["<b>tier 1</b> · per frame<br/>10–60 Hz"]:::t1
+    L2["<b>tier 2</b> · per keyframe<br/>1–10 Hz"]:::t2
+    L3["<b>tier 3</b> · on loop"]:::t3
+    LX["outside the SLAM tiers"]:::ext
+  end
   subgraph S["Sensors"]
     direction LR
     IMU["IMU<br/>200–1000 Hz"]
@@ -185,11 +202,16 @@ flowchart TB
   IMU --> EKF
   MAP -->|"costmap / ESDF"| CTRL
 
-  style PRE fill:#31456b,stroke:#8ab4f8,color:#fff
-  style BE fill:#31456b,stroke:#8ab4f8,color:#fff
+  style PRE fill:#6b5b31,stroke:#f8d48a,color:#fff
+  style OUTP fill:#6b5b31,stroke:#f8d48a,color:#fff
   style FE fill:#31456b,stroke:#8ab4f8,color:#fff
-  style ODOM fill:#3d5b3d,stroke:#9ad49a,color:#fff
-  style EKF fill:#6b3145,stroke:#f8a1b4,color:#fff
+  style KF fill:#6b3145,stroke:#f8a1b4,color:#fff
+  style BE fill:#6b3145,stroke:#f8a1b4,color:#fff
+  style PR fill:#3d5b3d,stroke:#9ad49a,color:#fff
+  style GV fill:#3d5b3d,stroke:#9ad49a,color:#fff
+  style MAP fill:#3d5b3d,stroke:#9ad49a,color:#fff
+  style EKF fill:#4a316b,stroke:#b48af8,color:#fff
+  style ODOM fill:#2b4a4a,stroke:#8ad4d4,color:#fff
 ```
 
 **One odometry stream leaves the system — the stages are in series, not in parallel.** This is worth being emphatic about, because drawing three producers pointing at a controller is a real architectural error, not just a messy diagram: a consumer must have exactly one authority on where the robot is.
