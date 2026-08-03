@@ -24,6 +24,11 @@ $$\mathbf{A}\,\delta = \mathbf{b}, \qquad \mathbf{A} = \begin{bmatrix}\boldsymbo
 
 Normal equations: $\mathbf{A}^\top\mathbf{A}\,\delta = \mathbf{A}^\top\mathbf{b}$, where $\boldsymbol{\Lambda} = \mathbf{A}^\top\mathbf{A}$ is the **information matrix**. Solve by sparse Cholesky ($\boldsymbol{\Lambda} = \mathbf{R}^\top\mathbf{R}$) or QR on $\mathbf{A}$ directly (better conditioned — $\kappa(\mathbf{A}^\top\mathbf{A}) = \kappa(\mathbf{A})^2$).
 
+!!! tip "The conditioning argument is real; so is its price"
+    QR's better conditioning makes it the tempting default when a solver misbehaves, and it does rescue genuinely rank-deficient problems. But it is not free, and reaching for it can mask a frontend bug rather than fix one. Measured on a VIO with `ISAM2Params::QR` versus `CHOLESKY`, same data, same graph: **205 ms versus 29 ms** per keyframe — a factor of seven — and once the frontend stopped emitting degenerate landmarks (forward-backward tracking checks, disparity and reprojection gates), Cholesky was also the *more accurate* of the two.
+
+    The lesson is ordering: if Cholesky fails, the first question is which factor is rank-deficient and why, not which factorization tolerates it. QR bought here was a workaround for near-singular landmarks that better data association removed entirely.
+
 Then **retract** on the manifold, do not add:
 
 $$\mathbf{X}^{(k+1)} = \mathbf{X}^{(k)} \oplus \delta \quad\text{i.e.}\quad \texttt{Values::retract(delta)}$$
@@ -43,6 +48,23 @@ Elimination order determines **fill-in** — how many zeros become non-zeros dur
 $$\begin{bmatrix}\boldsymbol{\Lambda}_{mm} & \boldsymbol{\Lambda}_{mr}\\ \boldsymbol{\Lambda}_{rm} & \boldsymbol{\Lambda}_{rr}\end{bmatrix} \;\longrightarrow\; \boldsymbol{\Lambda}_{rr} - \boldsymbol{\Lambda}_{rm}\boldsymbol{\Lambda}_{mm}^{-1}\boldsymbol{\Lambda}_{mr}$$
 
 The result is **dense over the Markov blanket** of the marginalized variable. This is the fundamental cost of fixed-lag smoothing and the reason you marginalize *keyframes*, not every frame: each marginalization permanently densifies the graph. It is also why marginalizing a landmark seen by 50 keyframes creates a 50-clique and is usually a mistake.
+
+!!! warning "Marginalization is easier to describe than to run"
+    Three ways of bounding a sliding window were implemented against this chapter and measured on EuRoC V1_01. The theoretically correct one lost.
+
+    | Approach | APE | Peak RSS |
+    |---|---|---|
+    | **Hold the oldest window keyframe fixed** behind a prior | **0.117 m** | 125 MB |
+    | Prior carrying that keyframe's marginal covariance | 0.155 m | 126 MB |
+    | Schur complement of the departing subgraph (`LinearContainerFactor`) | 0.214 m | 225 MB |
+
+    The middle row is a trap worth naming: a prior built from a variable's *marginal* double-counts, because the surviving factors that touch it are still in the graph contributing the same information. A marginalization **replaces** what it removes; it does not summarise what remains.
+
+    The bottom row is the correct operation and still lost, for two reasons this section already gives you: the fill-in is real (memory nearly doubled — that *is* the Markov-blanket densification), and a linearized marginal pins a linearization point the separator then drifts away from. The standard remedy is **first-estimates-Jacobians** — keep the Jacobians of marginalized information at their original linearization point so repeated re-linearization cannot inject spurious certainty — and without FEJ, marginalizing is worse than not.
+
+    Which is why ORB-SLAM3 fixes its out-of-window keyframes instead of marginalizing them ([§4.3](chapter-4.md)). That is not a shortcut; on this evidence it is the better engineering trade unless you are also prepared to implement FEJ.
+
+    Trying to get GTSAM's `ISAM2::marginalizeLeaves()` to do this incrementally failed outright: a few keyframes after an apparently successful call, the Bayes tree still referenced keys the delta had dropped and back-substitution threw. Marginalize by rebuilding a graph you control, not by editing a solver's internals.
 
 ## 3.4 iSAM2
 
@@ -136,7 +158,8 @@ while running:
     # 6. incremental solve
     isam.update(graph, values)
     isam.update()                      # extra iterations after loop closure
-    result = isam.calculateEstimate()
+    result = isam.calculateEstimate()  # ← see the note below: fine here,
+                                       #   fatal once landmarks are variables
 
     # 7. reset for next interval
     graph.resize(0); values.clear()
@@ -151,6 +174,13 @@ Four failure modes this pseudocode is written to avoid:
 - **Identity initial guess.** Gauss-Newton is local. Feeding it IMU-propagated initial values instead of identity is often the difference between converging and not.
 - **Forgetting `resetIntegrationAndSetBias`.** The preintegration must be reset to the *newly optimized* bias, otherwise the next interval integrates against a stale linearization point and the bias estimate oscillates.
 - **Loop closures with a Gaussian noise model.** One false positive with a tight Gaussian will fold the map. Cauchy or Geman-McClure, plus an independent geometric fitness gate, plus ideally **GNC** — graduated non-convexity anneals a convex surrogate toward the true robust cost, so you don't need a good initial guess for the robust problem to work.
+
+!!! danger "`calculateEstimate()` with no argument is O(everything), every keyframe"
+    The graph above is pose-only, so materialising the whole estimate each iteration costs little and the line is harmless. Add landmarks — any visual system — and the same line copies every pose, velocity, bias *and* map point on every keyframe. Measured in a stereo-inertial implementation: **7.3 GB resident** on EuRoC MH_01, enough to exhaust the machine it ran on.
+
+    GTSAM offers `calculateEstimate<T>(key)`, which back-substitutes only along the path to that variable. Use it, and let the caller ask for the handful of values it actually needs — which is also why [§1.5](chapter-1.md) gives `Backend` an `at(key)` and a `landmark_at(id)` and has `update()` return nothing at all.
+
+    Two further gates worth knowing, both learned the same way: loop candidates against keyframes from the *initialization period* should be rejected outright (their landmarks were triangulated with almost no parallax, before scale and bias converged — one such loop moved APE from 0.254 m to 0.441 m), and the PnP inlier **ratio** separates true from false loops far better than the inlier count alone.
 
 ## 3.7 Factor graph, drawn
 

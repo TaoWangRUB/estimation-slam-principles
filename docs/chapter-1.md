@@ -299,12 +299,16 @@ Frontend                                                         Chapter 4
     associate(Feature[], Landmark[])        -> Match[]             §4.1
     triangulate(Match[], NavState[])        -> Landmark[]          §4.2
     is_keyframe(Frame, Match[])             -> bool                §4.3
+    update_landmarks(Landmark[])            -> ()                  §1.2 ◄─┐
+    forget_landmarks(LandmarkId[])          -> ()                  §1.2 ◄─┤
+                                        the backend→frontend arrow ───────┘
 
 Backend                                                          Chapter 3
     add(Factor[])                           -> ()                  §3.1
-    update(Values initial_guess)            -> Values              §3.4
-    marginalize(Key[])                      -> ()                  §3.3
+    update(Values initial_guess)            -> ()                  §3.4
     at(Key)                                 -> NavState            §3.5
+    landmark_at(LandmarkId)                 -> Point3 | absent     §3.5
+    marginalize(Key[])                      -> ()                  §3.3
 
 PlaceRecognition                                                 Chapter 5
     insert(Keyframe)                        -> ()                  §5.3
@@ -320,6 +324,11 @@ OutputPredictor                                              Chapters 2 and 6
     on_state(NavState @ t_kf)               -> ()                  §2.9
     on_imu(ImuSample)                       -> Odometry @ now      §2.9 / §6.4
 ```
+
+!!! warning "Two signatures that look harmless and are not"
+    **`update()` must not return `Values`.** The obvious signature — solve, hand back the estimate — copies *every* variable in the graph on *every* keyframe. With a pose-only graph that is cheap and the mistake never surfaces; add landmarks and it is fatal. Measured in an implementation of this chapter: 7.3 GB resident on EuRoC MH_01, enough to exhaust a 31 GB machine. The fix is to return nothing and read back through targeted queries — `at(key)` and `landmark_at(id)` — which is why they are listed above. GTSAM's `calculateEstimate()` has both forms and the per-key one is the one you want ([§3.6](chapter-3.md) makes the same point about its own pseudocode).
+
+    **The frontend needs a channel *back* from the backend.** The four original methods make the frontend a pure producer, but guided matching (§1.1) and any depth gating consume landmark *positions* — and if those are the values frozen at triangulation time, both features actively hurt. Measured: enabling IMU-guided matching against stale landmark seeds took APE from 0.11 m to 0.99 m; the same feature against backend-refreshed seeds improved it. The `map` arrow in §1.2 therefore carries more than the anchor state, and `update_landmarks` / `forget_landmarks` are the interface for it. The removal half matters too, once the backend bounds its window: a frontend that keeps emitting observations for landmarks the backend has dropped will name variables that no longer exist.
 
 !!! tip "This split is not hypothetical"
     NVIDIA's cuVSLAM ships exactly this division as its public API: a `cuvslam::Odometry` class (frontend, domains A–C) whose `Track()` returns a pose estimate, and a `cuvslam::Slam` class (backend, domain D) whose `Track()` **takes an `Odometry::State`**. That struct — relative pose delta, keyframe flag, observations, landmarks, optional gravity — is a real instance of the §1.3 contract. See [§4.4](chapter-4.md).

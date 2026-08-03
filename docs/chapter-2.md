@@ -60,7 +60,22 @@ $$\sigma_A^2(\tau) = \underbrace{\frac{N^2}{\tau}}_{\text{white noise}} + \under
                         └────────── read N here:  σ_A(1 s) = N
 ```
 
-How to read it physically: at **short $\tau$** you are averaging a handful of samples, so white noise dominates and averaging longer helps — the curve falls. At **long $\tau$** the bias has had time to wander, so averaging longer *hurts* — the curve rises. The minimum between them is the bias instability, the flicker floor, which a random-walk bias model does **not** represent. That mismatch is why $\sigma_{bg}$ read straight off the plot is usually optimistic in practice and often needs inflating by 2–10× in a real filter.
+How to read it physically: at **short $\tau$** you are averaging a handful of samples, so white noise dominates and averaging longer helps — the curve falls. At **long $\tau$** the bias has had time to wander, so averaging longer *hurts* — the curve rises. The minimum between them is the bias instability, the flicker floor, which a random-walk bias model does **not** represent.
+
+!!! warning "Which parameter to inflate, and by how much"
+    It is tempting to conclude from the flicker floor that $\sigma_{bg}$ is the optimistic one and needs a factor of 2–10×. In practice the parameters that need inflating for an optimization-based VIO are the **white-noise densities** $\sigma_g, \sigma_a$, and by considerably more than that.
+
+    Compare EuRoC's own published calibration against the values VINS-Fusion-style systems actually run on the same data:
+
+    | | $\sigma_g$ | $\sigma_a$ | $\sigma_{bg}$ | $\sigma_{ba}$ |
+    |---|---|---|---|---|
+    | EuRoC `imu0/sensor.yaml` (Allan) | 1.70e-4 | 2.0e-3 | 1.94e-5 | 3.0e-3 |
+    | Used in practice | 4.0e-3 | 8.0e-2 | 2.0e-6 | 4.0e-5 |
+    | ratio | **×24** | **×40** | ÷10 | ÷75 |
+
+    The white-noise densities go *up* by one to two orders of magnitude, and the random walks go *down*. Measured effect of that swap alone, everything else held fixed: APE 0.211 m → 0.108 m on V1_01, 0.434 m → 0.254 m on MH_01.
+
+    The reason is that the Allan calibration is taken on a static bench, so it excludes vibration, unmodelled scale/misalignment error, and timing jitter — all of which appear as extra white noise in flight. An IMU factor built from bench numbers is *overconfident*, and in a joint visual-inertial problem an overconfident IMU factor does not merely mis-weight itself: it overwhelms the reprojection terms it is supposed to be fused with. Inflate until the two halves are comparable, and verify the choice by measurement rather than by derivation — nobody derives these.
 
 Discrete-time covariances scale as $\sigma^2/\Delta t$ for white noise and $\sigma^2 \Delta t$ for random walk:
 
